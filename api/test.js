@@ -16,7 +16,8 @@ export default async function handler(req, res) {
   
   const keyword = "전시";
   
-  const url = `http://apis.data.go.kr/1230000/BidPublicInfoService/getBidPblancListInfoServcPPSSrch?` +
+  // /ad/ 포함된 HTTPS 엔드포인트
+  const url = `https://apis.data.go.kr/1230000/ad/BidPublicInfoService/getBidPblancListInfoServcPPSSrch?` +
     `ServiceKey=${API_KEY}` +
     `&type=json` +
     `&inqryDiv=1` +
@@ -28,7 +29,15 @@ export default async function handler(req, res) {
   
   try {
     const response = await fetch(url);
-    const data = await response.json();
+    const text = await response.text();
+    
+    // JSON 파싱 시도
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch (e) {
+      data = { rawText: text };
+    }
     
     res.status(200).json({
       success: true,
