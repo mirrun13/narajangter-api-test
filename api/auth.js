@@ -33,18 +33,12 @@ export default async function handler(req, res) {
     }
 
     // 2. 비밀번호 변경 (관리자 전용)
-    if (action === 'change-password') {
+if (action === 'change-guest-password') {
   const role = await kv.get(`session_${token}`);
   if (role !== 'admin') return res.status(401).json({ success: false, error: '권한 없음' });
-  const { target } = req.body || {};
-  if (target === 'guest') {
-    await kv.set('guest_pw', newPassword);
-  } else {
-    await kv.set('admin_pw', newPassword);
-  }
-  return res.status(200).json({ success: true, message: '비밀번호가 변경되었습니다.' });
+  await kv.set('guest_pw', newPassword);
+  return res.status(200).json({ success: true, message: '직원 입장 암호가 변경되었습니다.' });
 }
-
     // 3. 상태 확인
     if (action === 'verify') {
       const role = await kv.get(`session_${token}`);
