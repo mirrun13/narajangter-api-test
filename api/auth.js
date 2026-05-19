@@ -7,67 +7,42 @@ export default async function handler(req, res) {
 
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  const action = req.query.action;
-  const { password, token, oldPassword, newPassword } = req.body || {};
+  const { action } = req.query;
+  const { password, token, newPassword } = req.body || {};
 
   try {
-    const ADMIN_PW = await kv.get('admin_pw') || 'mir19790805';
-    const GUEST_PW = await kv.get('guest_pw') || 'some2026';
+    // 1. 서버 중앙 DB에서 항상 최신 비밀번호를 가져옴 (PC 로컬값 무시)
+    let adminPw = await kv.get('admin_pw') || 'mir19790805';
+    let guestPw = await kv.get('guest_pw') || 'some2026';
 
-    // 1. 대시보드 최초 입장 로직 (에러 발생 원인 해결!)
-    if (action === 'check-access') {
-      if (password === ADMIN_PW) {
-        const newToken = 'admin_' + Math.random().toString(36).substr(2, 9);
-        await kv.set(`session_${newToken}`, 'admin', { ex: 86400 });
-        return res.status(200).json({ success: true, access: 'admin', token: newToken });
+    // 2. 로그인 로직
+    if (action === 'check-access' || action === 'login') {
+      if (password === adminPw) {
+        const sessionToken = 'admin_' + Math.random().toString(36).substr(2, 9);
+        await kv.set(`session_${sessionToken}`, 'admin', { ex: 86400 });
+        return res.status(200).json({ success: true, access: 'admin', token: sessionToken });
       }
-      if (password === GUEST_PW) {
+      if (password === guestPw) {
         return res.status(200).json({ success: true, access: 'guest' });
       }
-      return res.status(401).json({ success: false, error: '비밀번호가 일치하지 않습니다.' });
+      return res.status(401).json({ success: false, error: '비밀번호 불일치' });
     }
 
-    // 2. 우측 상단 관리자 로그인 로직
-    if (action === 'login') {
-      if (password === ADMIN_PW) {
-        const newToken = 'admin_' + Math.random().toString(36).substr(2, 9);
-        await kv.set(`session_${newToken}`, 'admin', { ex: 86400 });
-        return res.status(200).json({ success: true, token: newToken });
-      }
-      return res.status(401).json({ success: false, error: '비밀번호가 일치하지 않습니다.' });
-    }
-
-    // 3. 관리자 권한 검증
-    if (action === 'verify') {
-      const role = await kv.get(`session_${token}`);
-      if (role === 'admin') return res.status(200).json({ success: true, isAdmin: true });
-      return res.status(401).json({ success: false, isAdmin: false });
-    }
-
-    // 4. 로그아웃
-    if (action === 'logout') {
-      if (token) await kv.del(`session_${token}`);
-      return res.status(200).json({ success: true });
-    }
-
-    // 5. 관리자 암호 변경
+    // 3. 비밀번호 변경 로직 (중앙 DB만 업데이트하면 모든 PC 동기화됨)
     if (action === 'change-password') {
       const role = await kv.get(`session_${token}`);
-      if (role !== 'admin') return res.status(401).json({ success: false, error: '권한이 없습니다.' });
-      if (oldPassword !== ADMIN_PW) return res.status(401).json({ success: false, error: '현재 비밀번호가 일치하지 않습니다.' });
+      if (role !== 'admin') return res.status(401).json({ success: false, error: '권한 없음' });
+      
       await kv.set('admin_pw', newPassword);
-      return res.status(200).json({ success: true, message: '관리자 비밀번호가 변경되었습니다.' });
+      return res.status(200).json({ success: true, message: '중앙 서버 암호 업데이트 완료' });
     }
 
-    // 6. 직원 입장 암호 변경
-    if (action === 'change-guest-password') {
+    if (action === 'verify') {
       const role = await kv.get(`session_${token}`);
-      if (role !== 'admin') return res.status(401).json({ success: false, error: '권한이 없습니다.' });
-      await kv.set('guest_pw', newPassword);
-      return res.status(200).json({ success: true, message: '직원용 비밀번호가 일괄 변경되었습니다.' });
+      return res.status(200).json({ success: true, isAdmin: role === 'admin' });
     }
 
-    return res.status(400).json({ success: false, error: '잘못된 요청입니다.' });
+    return res.status(400).json({ success: false });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message });
   }
