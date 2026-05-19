@@ -51,12 +51,8 @@ export default async function handler(req, res) {
     `&inqryBgnDt=${range.bgn}&inqryEndDt=${range.end}` +
     `&pageNo=1&numOfRows=100&bidNtceNm=${encodeURIComponent(keyword)}`;
   
+  // [수정 핵심] 사라진 '접수문서' API를 버리고, 방금 신청 완료하신 메인 '사전규격정보' 하나로만 깔끔하게 통일했습니다!
   const preSpecEndpoints = [
-    {
-      url: (keyword, range) => `https://apis.data.go.kr/1230000/ao/BfSpecRcptDocBidPublicInfoService/getBfSpecRcptDocPblancListInfoServcPPSSrch?ServiceKey=${API_KEY}&type=json&inqryDiv=1&inqryBgnDt=${range.bgn}&inqryEndDt=${range.end}&pageNo=1&numOfRows=100&rcptDocPblancNm=${encodeURIComponent(keyword)}`,
-      titleField: 'rcptDocPblancNm',
-      noField: 'rcptDocPblancNo'
-    },
     {
       url: (keyword, range) => `https://apis.data.go.kr/1230000/BfSpecPublicInfoService/getBfSpecListInfo?ServiceKey=${API_KEY}&type=json&inqryDiv=1&inqryBgnDt=${range.bgn}&inqryEndDt=${range.end}&pageNo=1&numOfRows=100&bfSpecRgstNm=${encodeURIComponent(keyword)}`,
       titleField: 'bfSpecRgstNm',
@@ -109,11 +105,11 @@ export default async function handler(req, res) {
       for (const item of items) {
         
         const itemNo = isPreSpec 
-          ? (item[noField || 'rcptDocPblancNo'] || item.bfSpecRgstNo || item.prdctClsfcNo || item.bidNtceNo || '')
+          ? (item[noField || 'bfSpecRgstNo'] || item.prdctClsfcNo || item.bidNtceNo || '')
           : (item.bidNtceNo || '');
         
         const itemName = isPreSpec
-          ? (item[titleField || 'rcptDocPblancNm'] || item.bfSpecRgstNm || item.prdctClsfcNoNm || item.bidNtceNm || '사전규격 공고')
+          ? (item[titleField || 'bfSpecRgstNm'] || item.prdctClsfcNoNm || item.bidNtceNm || '사전규격 공고')
           : (item.bidNtceNm || '');
         
         if (!itemNo || !itemName) continue;
@@ -163,8 +159,8 @@ export default async function handler(req, res) {
   const allItems = Array.from(itemMap.values());
   
   allItems.sort((a, b) => {
-    const aDate = a.bidClseDt || a.opengDt || a.bfSpecRgstDt || a.rcptDt || '9999';
-    const bDate = b.bidClseDt || b.opengDt || b.bfSpecRgstDt || b.rcptDt || '9999';
+    const aDate = a.bidClseDt || a.opengDt || a.bfSpecRgstDt || '9999';
+    const bDate = b.bidClseDt || b.opengDt || b.bfSpecRgstDt || '9999';
     return aDate.localeCompare(bDate);
   });
   
