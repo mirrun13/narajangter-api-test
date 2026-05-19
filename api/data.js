@@ -17,16 +17,8 @@ export default async function handler(req, res) {
   if (!forceRefresh) {
     try {
       const cached = await kv.get(CACHE_KEY);
-      if (cached) {
-        return res.status(200).json({
-          ...cached,
-          cached: true,
-          cacheAge: Math.floor((Date.now() - new Date(cached.timestamp).getTime()) / 1000)
-        });
-      }
-    } catch (e) {
-      console.error('캐시 조회 실패:', e);
-    }
+      if (cached) return res.status(200).json({...cached, cached: true});
+    } catch (e) { console.error(e); }
   }
   
   const fmt = (d) => {
@@ -38,148 +30,40 @@ export default async function handler(req, res) {
   
   const now = new Date();
   const day30 = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-  const day60 = new Date(now.getTime() - 60 * 24 * 60 * 60 * 1000);
+  const ranges = [{ bgn: fmt(day30) + "0000", end: fmt(now) + "2359" }];
   
-  const ranges = [
-    { bgn: fmt(day30) + "0000", end: fmt(now) + "2359" },
-    { bgn: fmt(day60) + "0000", end: fmt(day30) + "2359" }
-  ];
+  // 1. 일반 입찰 API
+  const bidUrl = (kw, r) => `https://apis.data.go.kr/1230000/ad/BidPublicInfoService/getBidPblancListInfoServcPPSSrch?ServiceKey=${API_KEY}&type=json&inqryDiv=1&inqryBgnDt=${r.bgn}&inqryEndDt=${r.end}&bidNtceNm=${encodeURIComponent(kw)}`;
+  // 2. 사전규격 API (방금 신청하신 것)
+  const preUrl = (kw, r) => `https://apis.data.go.kr/1230000/BfSpecPublicInfoService/getBfSpecListInfo?ServiceKey=${API_KEY}&type=json&inqryDiv=1&inqryBgnDt=${r.bgn}&inqryEndDt=${r.end}&bfSpecRgstNm=${encodeURIComponent(kw)}`;
   
-  const buildBidUrl = (keyword, range) => 
-    `https://apis.data.go.kr/1230000/ad/BidPublicInfoService/getBidPblancListInfoServcPPSSrch?` +
-    `ServiceKey=${API_KEY}&type=json&inqryDiv=1` +
-    `&inqryBgnDt=${range.bgn}&inqryEndDt=${range.end}` +
-    `&pageNo=1&numOfRows=100&bidNtceNm=${encodeURIComponent(keyword)}`;
-  
-  // [수정 핵심] 사라진 '접수문서' API를 버리고, 방금 신청 완료하신 메인 '사전규격정보' 하나로만 깔끔하게 통일했습니다!
-  const preSpecEndpoints = [
-    {
-      url: (keyword, range) => `https://apis.data.go.kr/1230000/BfSpecPublicInfoService/getBfSpecListInfo?ServiceKey=${API_KEY}&type=json&inqryDiv=1&inqryBgnDt=${range.bgn}&inqryEndDt=${range.end}&pageNo=1&numOfRows=100&bfSpecRgstNm=${encodeURIComponent(keyword)}`,
-      titleField: 'bfSpecRgstNm',
-      noField: 'bfSpecRgstNo'
-    }
-  ];
-  
-  const bidTasks = [];
-  for (const keyword of KEYWORDS) {
-    for (const range of ranges) {
-      bidTasks.push(
-        fetch(buildBidUrl(keyword, range))
-          .then(r => r.json())
-          .then(data => ({ keyword, items: data?.response?.body?.items || [], type: 'bid' }))
-          .catch(err => ({ keyword, items: [], type: 'bid', error: err.message }))
-      );
+  const tasks = [];
+  for (const kw of KEYWORDS) {
+    for (const r of ranges) {
+      tasks.push(fetch(bidUrl(kw, r)).then(r => r.json()).then(d => ({ items: d?.response?.body?.items || [], type: 'bid' })));
+      tasks.push(fetch(preUrl(kw, r)).then(r => r.json()).then(d => ({ items: d?.response?.body?.items || [], type: 'pre' })));
     }
   }
   
-  const preSpecTasks = [];
-  for (const endpoint of preSpecEndpoints) {
-    for (const keyword of KEYWORDS) {
-      for (const range of ranges) {
-        preSpecTasks.push(
-          fetch(endpoint.url(keyword, range))
-            .then(r => r.json())
-            .then(data => ({ 
-              keyword, 
-              items: data?.response?.body?.items || [], 
-              type: 'preSpec',
-              titleField: endpoint.titleField,
-              noField: endpoint.noField
-            }))
-            .catch(err => ({ keyword, items: [], type: 'preSpec', error: err.message }))
-        );
-      }
-    }
-  }
-  
-  const [bidResults, preSpecResults] = await Promise.all([
-    Promise.all(bidTasks),
-    Promise.all(preSpecTasks)
-  ]);
-  
+  const results = await Promise.all(tasks);
   const itemMap = new Map();
   
-  const processResults = (results, isPreSpec) => {
-    for (const result of results) {
-      const { keyword, items, titleField, noField } = result;
-      for (const item of items) {
-        
-        const itemNo = isPreSpec 
-          ? (item[noField || 'bfSpecRgstNo'] || item.prdctClsfcNo || item.bidNtceNo || '')
-          : (item.bidNtceNo || '');
-        
-        const itemName = isPreSpec
-          ? (item[titleField || 'bfSpecRgstNm'] || item.prdctClsfcNoNm || item.bidNtceNm || '사전규격 공고')
-          : (item.bidNtceNm || '');
-        
-        if (!itemNo || !itemName) continue;
-        
-        const key = `${itemNo}-${item.bidNtceOrd || '000'}-${isPreSpec ? 'pre' : 'bid'}`;
-        
-        if (itemMap.has(key)) {
-          const existing = itemMap.get(key);
-          if (!existing.matchedKeywords.includes(keyword)) {
-            existing.matchedKeywords.push(keyword);
-          }
-        } else {
-          const isTrackA = TRACK_A_PATTERNS.some(p => itemName.includes(p));
-          
-          const indstCd = item.indstrytyCd || '';
-          const indstNm = item.indstrytyLmtNm || '';
-          const hasIndstLimit = item.indstrytyLmtYn === 'Y' || indstCd || indstNm;
-          
-          let industryStatus = 'unknown';
-          if (!hasIndstLimit) {
-            industryStatus = 'no_limit';
-          } else if (indstCd.includes(TARGET_INDUSTRY_CODE) || indstNm.includes('실내건축')) {
-            industryStatus = 'match';
-          } else {
-            industryStatus = 'mismatch';
-          }
-          
-          itemMap.set(key, {
-            ...item,
-            bidNtceNo: itemNo,
-            bidNtceNm: itemName,
-            matchedKeywords: [keyword],
-            track: isPreSpec ? 'P' : (isTrackA ? 'A' : 'B'),
-            isPreSpec,
-            industryStatus,
-            industryCode: indstCd,
-            industryName: indstNm
-          });
-        }
+  results.forEach(res => {
+    res.items.forEach(item => {
+      const isPre = res.type === 'pre';
+      const id = isPre ? item.bfSpecRgstNo : item.bidNtceNo;
+      if (!id) return;
+      
+      const key = `${id}-${isPre ? 'pre' : 'bid'}`;
+      if (!itemMap.has(key)) {
+        const title = isPre ? item.bfSpecRgstNm : item.bidNtceNm;
+        itemMap.set(key, { ...item, bidNtceNo: id, bidNtceNm: title, track: isPre ? 'P' : 'B' });
       }
-    }
-  };
-  
-  processResults(bidResults, false);
-  processResults(preSpecResults, true);
-  
-  const allItems = Array.from(itemMap.values());
-  
-  allItems.sort((a, b) => {
-    const aDate = a.bidClseDt || a.opengDt || a.bfSpecRgstDt || '9999';
-    const bDate = b.bidClseDt || b.opengDt || b.bfSpecRgstDt || '9999';
-    return aDate.localeCompare(bDate);
+    });
   });
   
-  const response = {
-    success: true,
-    timestamp: now.toISOString(),
-    totalCount: allItems.length,
-    trackACount: allItems.filter(i => i.track === 'A').length,
-    trackBCount: allItems.filter(i => i.track === 'B').length,
-    preSpecCount: allItems.filter(i => i.track === 'P').length,
-    items: allItems,
-    cached: false
-  };
-  
-  try {
-    await kv.set(CACHE_KEY, response, { ex: CACHE_DURATION });
-  } catch (e) {
-    console.error('캐시 저장 실패:', e);
-  }
-  
+  const items = Array.from(itemMap.values());
+  const response = { success: true, items };
+  await kv.set(CACHE_KEY, response, { ex: CACHE_DURATION });
   res.status(200).json(response);
 }
