@@ -12,7 +12,7 @@ export default async function handler(req, res) {
   const KEYWORDS = ["전시","홍보관","과학관","체험","박물관","행사","홍보","인테리어","디자인","공간","서울"];
   const TRACK_A_PATTERNS = ['협상','기술제안','제안서','2단계','설계공모'];
   const TARGET_INDUSTRY_CODE = "4990";
-  const CACHE_TTL = 3600;
+  const CACHE_TTL = 86400;
   const forceRefresh = req.query.refresh === 'true';
 
   try {
