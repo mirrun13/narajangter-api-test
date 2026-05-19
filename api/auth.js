@@ -1,100 +1,74 @@
-// 로그인 및 비밀번호 변경 API
 import { kv } from '@vercel/kv';
-
-const DEFAULT_PASSWORD = "some2026"; // 초기 비밀번호 (한 번만 사용)
-
-// 간단한 토큰 생성
-function generateToken() {
-  return Date.now().toString(36) + Math.random().toString(36).substring(2, 15);
-}
-
-// 토큰 검증
-async function verifyToken(token) {
-  if (!token) return false;
-  const stored = await kv.get(`token:${token}`);
-  return stored === 'admin';
-}
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, GET');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
-  
-  const { action } = req.query;
-  
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') return res.status(200).end();
+
+  const action = req.query.action;
+  const { password, token, oldPassword, newPassword } = req.body || {};
+
   try {
-    // 로그인
+    const ADMIN_PW = await kv.get('admin_pw') || 'mir19790805';
+    const GUEST_PW = await kv.get('guest_pw') || 'some2026';
+
+    // 1. 대시보드 최초 입장 로직 (에러 발생 원인 해결!)
+    if (action === 'check-access') {
+      if (password === ADMIN_PW) {
+        const newToken = 'admin_' + Math.random().toString(36).substr(2, 9);
+        await kv.set(`session_${newToken}`, 'admin', { ex: 86400 });
+        return res.status(200).json({ success: true, access: 'admin', token: newToken });
+      }
+      if (password === GUEST_PW) {
+        return res.status(200).json({ success: true, access: 'guest' });
+      }
+      return res.status(401).json({ success: false, error: '비밀번호가 일치하지 않습니다.' });
+    }
+
+    // 2. 우측 상단 관리자 로그인 로직
     if (action === 'login') {
-      const { password } = req.body || {};
-      
-      if (!password) {
-        return res.status(400).json({ success: false, error: '비밀번호를 입력하세요' });
+      if (password === ADMIN_PW) {
+        const newToken = 'admin_' + Math.random().toString(36).substr(2, 9);
+        await kv.set(`session_${newToken}`, 'admin', { ex: 86400 });
+        return res.status(200).json({ success: true, token: newToken });
       }
-      
-      // 저장된 비밀번호 가져오기 (없으면 기본값)
-      let storedPassword = await kv.get('admin_password');
-      if (!storedPassword) {
-        storedPassword = DEFAULT_PASSWORD;
-        await kv.set('admin_password', DEFAULT_PASSWORD);
-      }
-      
-      if (password !== storedPassword) {
-        return res.status(401).json({ success: false, error: '비밀번호가 틀렸습니다' });
-      }
-      
-      // 토큰 발급 (24시간 유효)
-      const token = generateToken();
-      await kv.set(`token:${token}`, 'admin', { ex: 86400 });
-      
-      return res.status(200).json({ success: true, token });
+      return res.status(401).json({ success: false, error: '비밀번호가 일치하지 않습니다.' });
     }
-    
-    // 비밀번호 변경
-    if (action === 'change-password') {
-      const { token, oldPassword, newPassword } = req.body || {};
-      
-      if (!await verifyToken(token)) {
-        return res.status(401).json({ success: false, error: '관리자 권한이 필요합니다' });
-      }
-      
-      const stored = await kv.get('admin_password') || DEFAULT_PASSWORD;
-      if (oldPassword !== stored) {
-        return res.status(401).json({ success: false, error: '현재 비밀번호가 틀렸습니다' });
-      }
-      
-      if (!newPassword || newPassword.length < 4) {
-        return res.status(400).json({ success: false, error: '새 비밀번호는 4자 이상이어야 합니다' });
-      }
-      
-      await kv.set('admin_password', newPassword);
-      return res.status(200).json({ success: true, message: '비밀번호가 변경되었습니다' });
-    }
-    
-    // 토큰 검증
+
+    // 3. 관리자 권한 검증
     if (action === 'verify') {
-      const { token } = req.body || {};
-      const isAdmin = await verifyToken(token);
-      return res.status(200).json({ success: true, isAdmin });
+      const role = await kv.get(`session_${token}`);
+      if (role === 'admin') return res.status(200).json({ success: true, isAdmin: true });
+      return res.status(401).json({ success: false, isAdmin: false });
     }
-    
-    // 로그아웃
+
+    // 4. 로그아웃
     if (action === 'logout') {
-      const { token } = req.body || {};
-      if (token) {
-        await kv.del(`token:${token}`);
-      }
+      if (token) await kv.del(`session_${token}`);
       return res.status(200).json({ success: true });
     }
-    
-    return res.status(400).json({ success: false, error: '잘못된 요청' });
-  } catch (e) {
-    console.error(e);
-    return res.status(500).json({ success: false, error: e.message });
+
+    // 5. 관리자 암호 변경
+    if (action === 'change-password') {
+      const role = await kv.get(`session_${token}`);
+      if (role !== 'admin') return res.status(401).json({ success: false, error: '권한이 없습니다.' });
+      if (oldPassword !== ADMIN_PW) return res.status(401).json({ success: false, error: '현재 비밀번호가 일치하지 않습니다.' });
+      await kv.set('admin_pw', newPassword);
+      return res.status(200).json({ success: true, message: '관리자 비밀번호가 변경되었습니다.' });
+    }
+
+    // 6. 직원 입장 암호 변경
+    if (action === 'change-guest-password') {
+      const role = await kv.get(`session_${token}`);
+      if (role !== 'admin') return res.status(401).json({ success: false, error: '권한이 없습니다.' });
+      await kv.set('guest_pw', newPassword);
+      return res.status(200).json({ success: true, message: '직원용 비밀번호가 일괄 변경되었습니다.' });
+    }
+
+    return res.status(400).json({ success: false, error: '잘못된 요청입니다.' });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
   }
 }
-
-export { verifyToken };
