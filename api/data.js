@@ -107,12 +107,13 @@ export default async function handler(req, res) {
     for (const result of results) {
       const { keyword, items, titleField, noField } = result;
       for (const item of items) {
+        
         const itemNo = isPreSpec 
-          ? (item[noField || 'rcptDocPblancNo'] || item.bfSpecRgstNo || item.bidNtceNo || '')
+          ? (item[noField || 'rcptDocPblancNo'] || item.bfSpecRgstNo || item.prdctClsfcNo || item.bidNtceNo || '')
           : (item.bidNtceNo || '');
         
         const itemName = isPreSpec
-          ? (item[titleField || 'rcptDocPblancNm'] || item.bfSpecRgstNm || item.bidNtceNm || '')
+          ? (item[titleField || 'rcptDocPblancNm'] || item.bfSpecRgstNm || item.prdctClsfcNoNm || item.bidNtceNm || '사전규격 공고')
           : (item.bidNtceNm || '');
         
         if (!itemNo || !itemName) continue;
@@ -162,8 +163,8 @@ export default async function handler(req, res) {
   const allItems = Array.from(itemMap.values());
   
   allItems.sort((a, b) => {
-    const aDate = a.bidClseDt || a.opengDt || '9999';
-    const bDate = b.bidClseDt || b.opengDt || '9999';
+    const aDate = a.bidClseDt || a.opengDt || a.bfSpecRgstDt || a.rcptDt || '9999';
+    const bDate = b.bidClseDt || b.opengDt || b.bfSpecRgstDt || b.rcptDt || '9999';
     return aDate.localeCompare(bDate);
   });
   
