@@ -12,7 +12,9 @@ async function fetchBids(keyword) {
   try {
     const url = `https://apis.data.go.kr/1230000/BidPublicInfoService04/getBidPblancListInfoServc?ServiceKey=${API_KEY}&type=json&numOfRows=100&pageNo=1&bidNm=${encodeURIComponent(keyword)}`;
     const res = await fetch(url);
-    const data = await res.json();
+    const text = await res.text();
+    console.log(`[BID][${keyword}] status:${res.status} body:${text.slice(0,200)}`);
+    const data = JSON.parse(text);
     const items = data?.response?.body?.items || [];
     return (Array.isArray(items) ? items : [items]).map(item => ({
       ...item,
@@ -21,7 +23,10 @@ async function fetchBids(keyword) {
       industryStatus: detectIndustry(item),
       isPreSpec: false
     }));
-  } catch { return []; }
+  } catch(e) {
+    console.log(`[BID][${keyword}] error:${e.message}`);
+    return [];
+  }
 }
 
 async function fetchSpecs(keyword) {
