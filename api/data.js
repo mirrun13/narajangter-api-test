@@ -48,10 +48,10 @@ export default async function handler(req, res) {
       `&pageNo=1&numOfRows=100&bidNtceNm=${encodeURIComponent(keyword)}`;
 
     const buildPreSpecUrl = (keyword, range) =>
-      `https://apis.data.go.kr/1230000/ao/BfSpecRcptDocBidPublicInfoService/getBfSpecRcptDocPblancListInfoServcPPSSrch?` +
+      `https://apis.data.go.kr/1230000/ao/HrcspSsstndrdInfoService/getPublicPrcureThngInfoServc?` +
       `ServiceKey=${API_KEY}&type=json&inqryDiv=1` +
       `&inqryBgnDt=${range.bgn}&inqryEndDt=${range.end}` +
-      `&pageNo=1&numOfRows=100&rcptDocPblancNm=${encodeURIComponent(keyword)}`;
+      `&pageNo=1&numOfRows=100&prdctClsfcNoNm=${encodeURIComponent(keyword)}`;
 
     const bidTasks = [];
     for (const keyword of KEYWORDS) {
