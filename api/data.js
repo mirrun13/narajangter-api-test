@@ -49,7 +49,6 @@ export default async function handler(req, res) {
       }
     }
 
-    // 중복 제거
     const uniqueBids = Array.from(new Map(bidResults.map(item => [item.bidNtceNo, item])).values());
     const uniqueSpecs = Array.from(new Map(specResults.map(item => [item.bfSpecRegNo, item])).values());
 
