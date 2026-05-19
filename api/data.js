@@ -10,7 +10,7 @@ const CACHE_TTL = 3600;
 
 async function fetchBids(keyword) {
   try {
-    const url = `https://apis.data.go.kr/1230000/BidPublicInfoService04/getBidPblancListInfoServc?ServiceKey=${encodeURIComponent(API_KEY)}&type=json&numOfRows=100&pageNo=1&bidNm=${encodeURIComponent(keyword)}`;
+    const url = `https://apis.data.go.kr/1230000/BidPublicInfoService04/getBidPblancListInfoServc?ServiceKey=${API_KEY}&type=json&numOfRows=100&pageNo=1&bidNm=${encodeURIComponent(keyword)}`;
     const res = await fetch(url);
     const data = await res.json();
     const items = data?.response?.body?.items || [];
@@ -26,7 +26,7 @@ async function fetchBids(keyword) {
 
 async function fetchSpecs(keyword) {
   try {
-    const url = `https://apis.data.go.kr/1230000/BfSpecPublicInfoService/getBfSpecListInfo?ServiceKey=${encodeURIComponent(API_KEY)}&type=json&numOfRows=100&pageNo=1&bfSpecNm=${encodeURIComponent(keyword)}`;
+    const url = `https://apis.data.go.kr/1230000/BfSpecPublicInfoService/getBfSpecListInfo?ServiceKey=${API_KEY}&type=json&numOfRows=100&pageNo=1&bfSpecNm=${encodeURIComponent(keyword)}`;
     const res = await fetch(url);
     const data = await res.json();
     const items = data?.response?.body?.items || [];
