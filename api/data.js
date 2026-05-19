@@ -16,7 +16,7 @@ export default async function handler(req, res) {
   const forceRefresh = req.query.refresh === 'true';
 
   try {
-    const cacheKey = 'bid_data_v5';
+    const cacheKey = 'bid_data_v6';
     if (!forceRefresh) {
       const cached = await kv.get(cacheKey);
       if (cached) {
@@ -47,11 +47,18 @@ export default async function handler(req, res) {
       `&inqryBgnDt=${range.bgn}&inqryEndDt=${range.end}` +
       `&pageNo=1&numOfRows=100&bidNtceNm=${encodeURIComponent(keyword)}`;
 
-    const buildPreSpecUrl = (keyword, range) =>
+    // 사전규격: 용역/공사 두 종류, 키워드 없이 전체 받아서 필터링
+    const buildPreSpecServcUrl = (range, pageNo) =>
       `https://apis.data.go.kr/1230000/ao/HrcspSsstndrdInfoService/getPublicPrcureThngInfoServc?` +
       `ServiceKey=${API_KEY}&type=json&inqryDiv=1` +
       `&inqryBgnDt=${range.bgn}&inqryEndDt=${range.end}` +
-      `&pageNo=1&numOfRows=100&prdctClsfcNoNm=${encodeURIComponent(keyword)}`;
+      `&pageNo=${pageNo}&numOfRows=200`;
+
+    const buildPreSpecCnstwkUrl = (range, pageNo) =>
+      `https://apis.data.go.kr/1230000/ao/HrcspSsstndrdInfoService/getPublicPrcureThngInfoCnstwk?` +
+      `ServiceKey=${API_KEY}&type=json&inqryDiv=1` +
+      `&inqryBgnDt=${range.bgn}&inqryEndDt=${range.end}` +
+      `&pageNo=${pageNo}&numOfRows=200`;
 
     const bidTasks = [];
     for (const keyword of KEYWORDS) {
@@ -59,20 +66,26 @@ export default async function handler(req, res) {
         bidTasks.push(
           fetch(buildBidUrl(keyword, range))
             .then(r => r.json())
-            .then(data => ({ keyword, items: data?.response?.body?.items || [], type: 'bid' }))
-            .catch(err => ({ keyword, items: [], type: 'bid', error: err.message }))
+            .then(data => ({ keyword, items: data?.response?.body?.items || [] }))
+            .catch(() => ({ keyword, items: [] }))
         );
       }
     }
 
     const preSpecTasks = [];
-    for (const keyword of KEYWORDS) {
-      for (const range of ranges) {
+    for (const range of ranges) {
+      for (let page = 1; page <= 3; page++) {
         preSpecTasks.push(
-          fetch(buildPreSpecUrl(keyword, range))
+          fetch(buildPreSpecServcUrl(range, page))
             .then(r => r.json())
-            .then(data => ({ keyword, items: data?.response?.body?.items || [], type: 'preSpec' }))
-            .catch(err => ({ keyword, items: [], type: 'preSpec', error: err.message }))
+            .then(data => ({ items: data?.response?.body?.items || [] }))
+            .catch(() => ({ items: [] }))
+        );
+        preSpecTasks.push(
+          fetch(buildPreSpecCnstwkUrl(range, page))
+            .then(r => r.json())
+            .then(data => ({ items: data?.response?.body?.items || [] }))
+            .catch(() => ({ items: [] }))
         );
       }
     }
@@ -84,40 +97,71 @@ export default async function handler(req, res) {
 
     const itemMap = new Map();
 
-    const processResults = (results, isPreSpec) => {
-      for (const { keyword, items } of results) {
-        const list = Array.isArray(items) ? items : [items];
-        for (const item of list) {
-          if (!item) continue;
-          const key = `${item.bidNtceNo || item.rcptDocPblancNo || ''}-${item.bidNtceOrd || '000'}-${isPreSpec ? 'pre' : 'bid'}`;
-          if (itemMap.has(key)) {
-            const existing = itemMap.get(key);
-            if (!existing.matchedKeywords.includes(keyword)) existing.matchedKeywords.push(keyword);
-          } else {
-            const name = item.bidNtceNm || item.rcptDocPblancNm || '';
-            const isTrackA = TRACK_A_PATTERNS.some(p => name.includes(p));
-            const indstCd = item.indstrytyCd || '';
-            const indstNm = item.indstrytyLmtNm || '';
-            const hasIndstLimit = item.indstrytyLmtYn === 'Y' || indstCd || indstNm;
-            let industryStatus = 'unknown';
-            if (!hasIndstLimit) industryStatus = 'no_limit';
-            else if (indstCd.includes(TARGET_INDUSTRY_CODE) || indstNm.includes('실내건축')) industryStatus = 'match';
-            else industryStatus = 'mismatch';
-            itemMap.set(key, {
-              ...item,
-              matchedKeywords: [keyword],
-              track: isPreSpec ? 'P' : (isTrackA ? 'A' : 'B'),
-              isPreSpec, industryStatus,
-              industryCode: indstCd,
-              industryName: indstNm
-            });
-          }
+    // 입찰공고 처리
+    for (const { keyword, items } of bidResults) {
+      const list = Array.isArray(items) ? items : [items];
+      for (const item of list) {
+        if (!item) continue;
+        const key = `${item.bidNtceNo || ''}-${item.bidNtceOrd || '000'}-bid`;
+        if (itemMap.has(key)) {
+          const existing = itemMap.get(key);
+          if (!existing.matchedKeywords.includes(keyword)) existing.matchedKeywords.push(keyword);
+        } else {
+          const name = item.bidNtceNm || '';
+          const isTrackA = TRACK_A_PATTERNS.some(p => name.includes(p));
+          const indstCd = item.indstrytyCd || '';
+          const indstNm = item.indstrytyLmtNm || '';
+          const hasIndstLimit = item.indstrytyLmtYn === 'Y' || indstCd || indstNm;
+          let industryStatus = 'unknown';
+          if (!hasIndstLimit) industryStatus = 'no_limit';
+          else if (indstCd.includes(TARGET_INDUSTRY_CODE) || indstNm.includes('실내건축')) industryStatus = 'match';
+          else industryStatus = 'mismatch';
+          itemMap.set(key, {
+            ...item, matchedKeywords: [keyword],
+            track: isTrackA ? 'A' : 'B',
+            isPreSpec: false, industryStatus,
+            industryCode: indstCd, industryName: indstNm
+          });
         }
       }
-    };
+    }
 
-    processResults(bidResults, false);
-    processResults(preSpecResults, true);
+    // 사전규격 처리 - 클라이언트 필터링
+    for (const { items } of preSpecResults) {
+      const list = Array.isArray(items) ? items : [items];
+      for (const item of list) {
+        if (!item) continue;
+        const name = item.prdctClsfcNoNm || '';
+        const client = item.rlDminsttNm || item.dminsttNm || '';
+        const searchText = name + ' ' + client;
+        const matchedKw = KEYWORDS.filter(kw => searchText.includes(kw));
+        if (matchedKw.length === 0) continue;
+
+        const key = `${item.bfSpecRgstNo || ''}-pre`;
+        if (itemMap.has(key)) {
+          const existing = itemMap.get(key);
+          for (const kw of matchedKw) {
+            if (!existing.matchedKeywords.includes(kw)) existing.matchedKeywords.push(kw);
+          }
+        } else {
+          itemMap.set(key, {
+            ...item,
+            bidNtceNo: item.bfSpecRgstNo || '',
+            bidNtceNm: name,
+            dminsttNm: client,
+            presmptPrce: item.asignBdgtAmt || '0',
+            bidClseDt: item.opninRgstClseDt || item.rcptDt || '',
+            bidNtceDt: item.rgstDt || '',
+            matchedKeywords: matchedKw,
+            track: 'P',
+            isPreSpec: true,
+            industryStatus: 'unknown',
+            industryCode: '',
+            industryName: ''
+          });
+        }
+      }
+    }
 
     const allItems = Array.from(itemMap.values());
     allItems.sort((a, b) => {
