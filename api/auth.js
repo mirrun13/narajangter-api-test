@@ -12,7 +12,7 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   const { action } = req.query;
-  cconst { oldPassword } = req.body || {};
+  const { password, token, newPassword, oldPassword } = req.body || {};
 
   try {
     // 중앙 서버에서 최신 암호 가져오기 (기본값 설정)
