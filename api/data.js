@@ -1,4 +1,5 @@
 import { Redis } from '@upstash/redis';
+
 const kv = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL,
   token: process.env.UPSTASH_REDIS_REST_TOKEN,
@@ -8,14 +9,16 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET');
 
+  // ===== 설정 =====
   const API_KEY = "183930463902db8616a702c3c3c875687e7f85b717d1ac6352473b3b9d390f5f";
-  const KEYWORDS = ["전시","홍보관","과학관","체험","박물관","행사","홍보","인테리어","디자인","공간","서울"];
-  const TRACK_A_PATTERNS = ['협상','기술제안','제안서','2단계','설계공모'];
+  const KEYWORDS = ["전시", "홍보관", "과학관", "체험", "박물관", "행사", "홍보", "인테리어", "디자인", "공간", "서울"];
+  const TRACK_A_PATTERNS = ['협상', '기술제안', '제안서', '2단계', '설계공모'];
   const TARGET_INDUSTRY_CODE = "4990";
   const CACHE_TTL = 86400;
   const forceRefresh = req.query.refresh === 'true';
 
   try {
+    // ===== 캐시 확인 =====
     const cacheKey = 'bid_data_v6';
     if (!forceRefresh) {
       const cached = await kv.get(cacheKey);
@@ -25,6 +28,7 @@ export default async function handler(req, res) {
       }
     }
 
+    // ===== 날짜 포맷 =====
     const fmt = (d) => {
       const y = d.getFullYear();
       const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -41,13 +45,13 @@ export default async function handler(req, res) {
       { bgn: fmt(day60) + "0000", end: fmt(day30) + "2359" }
     ];
 
+    // ===== URL 빌더 =====
     const buildBidUrl = (keyword, range) =>
       `https://apis.data.go.kr/1230000/ad/BidPublicInfoService/getBidPblancListInfoServcPPSSrch?` +
       `ServiceKey=${API_KEY}&type=json&inqryDiv=1` +
       `&inqryBgnDt=${range.bgn}&inqryEndDt=${range.end}` +
       `&pageNo=1&numOfRows=100&bidNtceNm=${encodeURIComponent(keyword)}`;
 
-    // 사전규격: 용역/공사 두 종류, 키워드 없이 전체 받아서 필터링
     const buildPreSpecServcUrl = (range, pageNo) =>
       `https://apis.data.go.kr/1230000/ao/HrcspSsstndrdInfoService/getPublicPrcureThngInfoServc?` +
       `ServiceKey=${API_KEY}&type=json&inqryDiv=1` +
@@ -60,6 +64,7 @@ export default async function handler(req, res) {
       `&inqryBgnDt=${range.bgn}&inqryEndDt=${range.end}` +
       `&pageNo=${pageNo}&numOfRows=200`;
 
+    // ===== API 호출 작업 생성 =====
     const bidTasks = [];
     for (const keyword of KEYWORDS) {
       for (const range of ranges) {
@@ -90,6 +95,7 @@ export default async function handler(req, res) {
       }
     }
 
+    // ===== 병렬 실행 =====
     const [bidResults, preSpecResults] = await Promise.all([
       Promise.all(bidTasks),
       Promise.all(preSpecTasks)
@@ -97,79 +103,102 @@ export default async function handler(req, res) {
 
     const itemMap = new Map();
 
-    // 입찰공고 처리
+    // ===== 입찰공고 처리 =====
     for (const { keyword, items } of bidResults) {
       const list = Array.isArray(items) ? items : [items];
       for (const item of list) {
         if (!item) continue;
+
         const key = `${item.bidNtceNo || ''}-${item.bidNtceOrd || '000'}-bid`;
+
         if (itemMap.has(key)) {
           const existing = itemMap.get(key);
-          if (!existing.matchedKeywords.includes(keyword)) existing.matchedKeywords.push(keyword);
-        } else {
-          const name = item.bidNtceNm || '';
-        const sucsfbidMthd = item.sucsfbidMthdNm || '';
-          
-const techRate = item.techAbltEvlRt || '';
-const isTrackA = 
-  (techRate && techRate !== '0' && techRate !== '') ||
-  sucsfbidMthd.includes('제안') ||
-  sucsfbidMthd.includes('협상') ||
-  TRACK_A_PATTERNS.some(p => name.includes(p));
-          const indstCd = item.indstrytyCd || '';
-          const indstNm = item.indstrytyLmtNm || '';
-          const hasIndstLimit = item.indstrytyLmtYn === 'Y' || indstCd || indstNm;
-          let industryStatus = 'unknown';
-          if (!hasIndstLimit) industryStatus = 'no_limit';
-          else if (indstCd.includes(TARGET_INDUSTRY_CODE) || indstNm.includes('실내건축')) industryStatus = 'match';
-          else industryStatus = 'mismatch';
-          itemMap.set(key, {
-            ...item, matchedKeywords: [keyword],
-            track: isTrackA ? 'A' : 'B',
-            isPreSpec: false, industryStatus,
-            industryCode: indstCd, industryName: indstNm
-          });
+          if (!existing.matchedKeywords.includes(keyword)) {
+            existing.matchedKeywords.push(keyword);
+          }
+          continue;
         }
+
+        const name         = item.bidNtceNm || '';
+        const sucsfbidMthd = item.sucsfbidMthdNm || '';
+        const techRate     = item.techAbltEvlRt || '';
+        const indstCd      = item.indstrytyCd || '';
+        const indstNm      = item.indstrytyLmtNm || '';
+
+        // 제안(A) vs 투찰(B) 분류
+        const isTrackA =
+          (techRate && techRate !== '0') ||
+          sucsfbidMthd.includes('제안') ||
+          sucsfbidMthd.includes('협상') ||
+          TRACK_A_PATTERNS.some(p => name.includes(p));
+
+        // 업종 매칭 상태
+        const hasIndstLimit = item.indstrytyLmtYn === 'Y' || indstCd || indstNm;
+        let industryStatus = 'unknown';
+        if (!hasIndstLimit) {
+          industryStatus = 'no_limit';
+        } else if (indstCd.includes(TARGET_INDUSTRY_CODE) || indstNm.includes('실내건축')) {
+          industryStatus = 'match';
+        } else {
+          industryStatus = 'mismatch';
+        }
+
+        itemMap.set(key, {
+          ...item,
+          matchedKeywords: [keyword],
+          track: isTrackA ? 'A' : 'B',
+          isPreSpec: false,
+          industryStatus,
+          industryCode: indstCd,
+          industryName: indstNm
+        });
       }
     }
 
-    // 사전규격 처리 - 클라이언트 필터링
+    // ===== 사전규격 처리 (클라이언트 필터링) =====
     for (const { items } of preSpecResults) {
       const list = Array.isArray(items) ? items : [items];
       for (const item of list) {
         if (!item) continue;
-        const name = item.prdctClsfcNoNm || '';
+
+        const name   = item.prdctClsfcNoNm || '';
         const client = item.rlDminsttNm || item.dminsttNm || '';
         const searchText = name + ' ' + client;
+
         const matchedKw = KEYWORDS.filter(kw => searchText.includes(kw));
         if (matchedKw.length === 0) continue;
 
         const key = `${item.bfSpecRgstNo || ''}-pre`;
+
         if (itemMap.has(key)) {
           const existing = itemMap.get(key);
           for (const kw of matchedKw) {
-            if (!existing.matchedKeywords.includes(kw)) existing.matchedKeywords.push(kw);
+            if (!existing.matchedKeywords.includes(kw)) {
+              existing.matchedKeywords.push(kw);
+            }
           }
-        } else {
-          itemMap.set(key, {
-            ...item,
-            bidNtceNo: item.bfSpecRgstNo || '',
-            bidNtceNm: name,
-            dminsttNm: client,
-            presmptPrce: item.asignBdgtAmt || '0',
-            bidClseDt: item.opninRgstClseDt || item.rcptDt || '',
-            bidNtceDt: item.rgstDt || '',
-            matchedKeywords: matchedKw,
-            track: 'P',
-            isPreSpec: true,
-            industryStatus: 'unknown',
-            industryCode: '',
-            industryName: ''
-          });
+          continue;
         }
+
+        itemMap.set(key, {
+          ...item,
+          bidNtceNo: item.bfSpecRgstNo || '',
+          bidNtceNm: name,
+          dminsttNm: client,
+          presmptPrce: item.asignBdgtAmt || '0',
+          bidClseDt: item.opninRgstClseDt || item.rcptDt || '',
+          bidNtceDt: item.rgstDt || '',
+          matchedKeywords: matchedKw,
+          track: 'P',
+          isPreSpec: true,
+          industryStatus: 'unknown',
+          industryCode: '',
+          industryName: ''
+        });
       }
     }
 
+    // ===== 정렬 (마감일 빠른 순) =====
     const allItems = Array.from(itemMap.values());
     allItems.sort((a, b) => {
       const aDate = a.bidClseDt || a.opengDt || '9999';
@@ -177,6 +206,7 @@ const isTrackA =
       return aDate.localeCompare(bDate);
     });
 
+    // ===== 응답 페이로드 =====
     const payload = {
       success: true,
       timestamp: now.toISOString(),
@@ -187,7 +217,9 @@ const isTrackA =
       items: allItems
     };
 
+    // ===== 캐시 저장 =====
     await kv.set(cacheKey, { payload, cachedAt: Date.now() }, { ex: CACHE_TTL });
+
     return res.status(200).json({ ...payload, cached: false, cacheAge: 0 });
 
   } catch (error) {
