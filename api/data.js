@@ -109,6 +109,7 @@ export default async function handler(req, res) {
         } else {
           const name = item.bidNtceNm || '';
         const sucsfbidMthd = item.sucsfbidMthdNm || '';
+          
 const techRate = item.techAbltEvlRt || '';
 const isTrackA = 
   (techRate && techRate !== '0' && techRate !== '') ||
