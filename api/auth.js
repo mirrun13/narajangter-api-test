@@ -42,7 +42,7 @@ if (action === 'change-guest-password') {
  if (action === 'change-password') {
   const role = await kv.get(`session_${token}`);
   if (role !== 'admin') return res.status(401).json({ success: false, error: '권한 없음' });
-  const { oldPassword, newPassword } = req.body || {};
+  const { oldPassword } = req.body || {};
   if (!newPassword || newPassword.length < 4) return res.status(400).json({ success: false, error: '비밀번호는 4자 이상이어야 합니다.' });
   const currentPw = await kv.get('admin_pw') || 'mir19790805';
   if (oldPassword !== currentPw) return res.status(401).json({ success: false, error: '현재 비밀번호가 틀렸습니다.' });
