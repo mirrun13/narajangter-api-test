@@ -108,7 +108,10 @@ export default async function handler(req, res) {
           if (!existing.matchedKeywords.includes(keyword)) existing.matchedKeywords.push(keyword);
         } else {
           const name = item.bidNtceNm || '';
-          const isTrackA = TRACK_A_PATTERNS.some(p => name.includes(p));
+          const sucsfbidMthd = item.sucsfbidMthdNm || '';
+const isTrackA = 
+  sucsfbidMthd.includes('제안') ||
+  TRACK_A_PATTERNS.some(p => name.includes(p));
           const indstCd = item.indstrytyCd || '';
           const indstNm = item.indstrytyLmtNm || '';
           const hasIndstLimit = item.indstrytyLmtYn === 'Y' || indstCd || indstNm;
