@@ -10,8 +10,6 @@ async function verifyToken(token) {
   if (!stored) return false;
   return stored === 'admin';
 }
-  return false;
-}
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
