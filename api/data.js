@@ -108,9 +108,12 @@ export default async function handler(req, res) {
           if (!existing.matchedKeywords.includes(keyword)) existing.matchedKeywords.push(keyword);
         } else {
           const name = item.bidNtceNm || '';
-          const sucsfbidMthd = item.sucsfbidMthdNm || '';
+        const sucsfbidMthd = item.sucsfbidMthdNm || '';
+const techRate = item.techAbltEvlRt || '';
 const isTrackA = 
+  (techRate && techRate !== '0' && techRate !== '') ||
   sucsfbidMthd.includes('제안') ||
+  sucsfbidMthd.includes('협상') ||
   TRACK_A_PATTERNS.some(p => name.includes(p));
           const indstCd = item.indstrytyCd || '';
           const indstNm = item.indstrytyLmtNm || '';
