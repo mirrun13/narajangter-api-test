@@ -31,12 +31,12 @@ export default async function handler(req, res) {
       }
       return res.status(401).json({ success: false, error: '비밀번호가 틀렸습니다.' });
     }
-   if (action === 'master-reset') {
+  if (action === 'master-reset') {
   if (password !== process.env.MASTER_KEY) return res.status(401).json({ success: false, error: '마스터키가 틀렸습니다.' });
   if (!newAdminPw || newAdminPw.length < 4) return res.status(400).json({ success: false, error: '새 관리자 비밀번호는 4자 이상이어야 합니다.' });
   if (!newGuestPw || newGuestPw.length < 4) return res.status(400).json({ success: false, error: '새 직원 비밀번호는 4자 이상이어야 합니다.' });
   await kv.set('admin_pw', newAdminPw);
-  await kv.set('guest_pw', newGuestPw);  ✅ newGuestPw로!
+  await kv.set('guest_pw', newGuestPw);
   return res.status(200).json({ success: true, message: '비밀번호가 새로 설정되었습니다.' });
 }
     if (action === 'change-guest-password') {
