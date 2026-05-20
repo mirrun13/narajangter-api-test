@@ -7,7 +7,12 @@ const kv = new Redis({
 async function verifyToken(token) {
   if (!token) return false;
   const stored = await kv.get(`token:${token}`);
-  return stored === 'admin';
+  if (!stored) return false;
+  if (stored === 'admin') return true;
+  if (typeof stored === 'object') {
+    return stored.role === 'admin' || stored.isAdmin === true;
+  }
+  return false;
 }
 
 export default async function handler(req, res) {
