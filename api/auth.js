@@ -39,6 +39,16 @@ if (action === 'change-guest-password') {
   await kv.set('guest_pw', newPassword);
   return res.status(200).json({ success: true, message: '직원 입장 암호가 변경되었습니다.' });
 }
+ if (action === 'change-password') {
+  const role = await kv.get(`session_${token}`);
+  if (role !== 'admin') return res.status(401).json({ success: false, error: '권한 없음' });
+  const { oldPassword, newPassword } = req.body || {};
+  if (!newPassword || newPassword.length < 4) return res.status(400).json({ success: false, error: '비밀번호는 4자 이상이어야 합니다.' });
+  const currentPw = await kv.get('admin_pw') || 'mir19790805';
+  if (oldPassword !== currentPw) return res.status(401).json({ success: false, error: '현재 비밀번호가 틀렸습니다.' });
+  await kv.set('admin_pw', newPassword);
+  return res.status(200).json({ success: true, message: '관리자 비밀번호가 변경되었습니다.' });
+}   
     // 3. 상태 확인
     if (action === 'verify') {
       const role = await kv.get(`session_${token}`);
