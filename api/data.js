@@ -9,14 +9,19 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Methods', 'GET');
 
   const API_KEY = "183930463902db8616a702c3c3c875687e7f85b717d1ac6352473b3b9d390f5f";
-  const KEYWORDS = ["전시","홍보관","과학관","체험","박물관","행사","홍보","인테리어","디자인","공간","서울"];
+  const KEYWORDS = [
+    "전시", "홍보관", "과학관", "체험", "박물관", "행사", "홍보", "인테리어", "디자인", "공간", "서울",
+    "미술관", "갤러리", "기념관", "아트센터", "문화관", "교육관", "문화재", "관광",
+    "미디어아트", "실감콘텐츠", "VR", "AR", "메타버스",
+    "리뉴얼", "리모델링", "개보수", "구축"
+  ];
   const TRACK_A_PATTERNS = ['협상','기술제안','제안서','2단계','설계공모'];
   const TARGET_INDUSTRY_CODE = "4990";
   const CACHE_TTL = 86400;
   const forceRefresh = req.query.refresh === 'true';
 
   try {
-    const cacheKey = 'bid_data_v6_test';
+    const cacheKey = 'bid_data_v8';
     if (!forceRefresh) {
       const cached = await kv.get(cacheKey);
       if (cached) {
@@ -107,8 +112,11 @@ export default async function handler(req, res) {
         } else {
           const name = item.bidNtceNm || '';
           const sucsfbidMthd = item.sucsfbidMthdNm || '';
+          const techRate = item.techAbltEvlRt || '';
           const isTrackA =
+            (techRate && techRate !== '0') ||
             sucsfbidMthd.includes('제안') ||
+            sucsfbidMthd.includes('협상') ||
             TRACK_A_PATTERNS.some(p => name.includes(p));
           const indstCd = item.indstrytyCd || '';
           const indstNm = item.indstrytyLmtNm || '';
