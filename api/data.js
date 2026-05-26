@@ -33,7 +33,7 @@ export default async function handler(req, res) {
   const PRESPEC_NUM_OF_ROWS = 200;  // 사전규격은 200
   const BID_MAX_PAGES       = 5;    // 키워드당 최대 500건
   const PRESPEC_MAX_PAGES   = 5;    // 기간당 최대 1000건
-  const CHUNK_SIZE          = 14;   // 동시 호출 제한 ⭐
+  const CHUNK_SIZE          = 7;   // 동시 호출 제한 ⭐
   const SEARCH_DAYS         = 90;
 
   // ===== 디버그 카운터 =====
@@ -42,7 +42,7 @@ export default async function handler(req, res) {
 
   try {
     // ===== 캐시 확인 (v7_1으로 강제 갱신) =====
-    const cacheKey = 'bid_data_v7_1';
+    const CACHE_KEY = 'bid_data_v7_2';
     if (!forceRefresh) {
       const cached = await kv.get(cacheKey);
       if (cached) {
