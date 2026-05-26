@@ -108,7 +108,7 @@ export default async function handler(req, res) {
 
     const preSpecTasks = [];
     for (const range of ranges) {
-      for (let page = 1; page <= 3; page++) {
+      for (let page = 1; page <= 10; page++) {
         preSpecTasks.push(
           fetch(buildPreSpecServcUrl(range, page))
             .then(r => r.json())
