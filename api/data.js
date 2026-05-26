@@ -21,7 +21,7 @@ export default async function handler(req, res) {
   const forceRefresh = req.query.refresh === 'true';
 
   try {
-    const cacheKey = 'bid_data_v8';
+    const cacheKey = 'bid_data_v9';
     if (!forceRefresh) {
       const cached = await kv.get(cacheKey);
       if (cached) {
@@ -40,17 +40,28 @@ export default async function handler(req, res) {
     const now = new Date();
     const day30 = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
     const day60 = new Date(now.getTime() - 60 * 24 * 60 * 60 * 1000);
+    const day90 = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
 
+    // 30일씩 3구간
     const ranges = [
       { bgn: fmt(day30) + "0000", end: fmt(now) + "2359" },
-      { bgn: fmt(day60) + "0000", end: fmt(day30) + "2359" }
+      { bgn: fmt(day60) + "0000", end: fmt(day30) + "2359" },
+      { bgn: fmt(day90) + "0000", end: fmt(day60) + "2359" }
     ];
 
-    const buildBidUrl = (keyword, range) =>
-      `https://apis.data.go.kr/1230000/ad/BidPublicInfoService/getBidPblancListInfoServcPPSSrch?` +
+    // 용역 - PPSSrch 빼고 일반 Servc
+    const buildBidServcUrl = (range, pageNo) =>
+      `https://apis.data.go.kr/1230000/ad/BidPublicInfoService/getBidPblancListInfoServc?` +
       `ServiceKey=${API_KEY}&type=json&inqryDiv=1` +
       `&inqryBgnDt=${range.bgn}&inqryEndDt=${range.end}` +
-      `&pageNo=1&numOfRows=100&bidNtceNm=${encodeURIComponent(keyword)}`;
+      `&pageNo=${pageNo}&numOfRows=200`;
+
+    // 공사 추가
+    const buildBidCnstwkUrl = (range, pageNo) =>
+      `https://apis.data.go.kr/1230000/ad/BidPublicInfoService/getBidPblancListInfoCnstwk?` +
+      `ServiceKey=${API_KEY}&type=json&inqryDiv=1` +
+      `&inqryBgnDt=${range.bgn}&inqryEndDt=${range.end}` +
+      `&pageNo=${pageNo}&numOfRows=200`;
 
     const buildPreSpecServcUrl = (range, pageNo) =>
       `https://apis.data.go.kr/1230000/ao/HrcspSsstndrdInfoService/getPublicPrcureThngInfoServc?` +
@@ -65,13 +76,19 @@ export default async function handler(req, res) {
       `&pageNo=${pageNo}&numOfRows=200`;
 
     const bidTasks = [];
-    for (const keyword of KEYWORDS) {
-      for (const range of ranges) {
+    for (const range of ranges) {
+      for (let page = 1; page <= 3; page++) {
         bidTasks.push(
-          fetch(buildBidUrl(keyword, range))
+          fetch(buildBidServcUrl(range, page))
             .then(r => r.json())
-            .then(data => ({ keyword, items: data?.response?.body?.items || [] }))
-            .catch(() => ({ keyword, items: [] }))
+            .then(data => ({ items: data?.response?.body?.items || [] }))
+            .catch(() => ({ items: [] }))
+        );
+        bidTasks.push(
+          fetch(buildBidCnstwkUrl(range, page))
+            .then(r => r.json())
+            .then(data => ({ items: data?.response?.body?.items || [] }))
+            .catch(() => ({ items: [] }))
         );
       }
     }
@@ -101,43 +118,54 @@ export default async function handler(req, res) {
 
     const itemMap = new Map();
 
-    for (const { keyword, items } of bidResults) {
+    // 입찰공고 처리 - 키워드 클라이언트 필터링
+    for (const { items } of bidResults) {
       const list = Array.isArray(items) ? items : [items];
       for (const item of list) {
         if (!item) continue;
+        const name = item.bidNtceNm || '';
+        const client = item.dminsttNm || item.ntceInsttNm || '';
+        const searchText = name + ' ' + client;
+        const matchedKw = KEYWORDS.filter(kw => searchText.includes(kw));
+        if (matchedKw.length === 0) continue;
+
         const key = `${item.bidNtceNo || ''}-${item.bidNtceOrd || '000'}-bid`;
         if (itemMap.has(key)) {
           const existing = itemMap.get(key);
-          if (!existing.matchedKeywords.includes(keyword)) existing.matchedKeywords.push(keyword);
-        } else {
-          const name = item.bidNtceNm || '';
-          const sucsfbidMthd = item.sucsfbidMthdNm || '';
-          const techRate = item.techAbltEvlRt || '';
-          const isTrackA =
-            (techRate && techRate !== '0') ||
-            sucsfbidMthd.includes('제안') ||
-            sucsfbidMthd.includes('협상') ||
-            TRACK_A_PATTERNS.some(p => name.includes(p));
-          const indstCd = item.indstrytyCd || '';
-          const indstNm = item.indstrytyLmtNm || '';
-          const hasIndstLimit = item.indstrytyLmtYn === 'Y' || indstCd || indstNm;
-          let industryStatus = 'unknown';
-          if (!hasIndstLimit) industryStatus = 'no_limit';
-          else if (indstCd.includes(TARGET_INDUSTRY_CODE) || indstNm.includes('실내건축')) industryStatus = 'match';
-          else industryStatus = 'mismatch';
-          itemMap.set(key, {
-            ...item,
-            matchedKeywords: [keyword],
-            track: isTrackA ? 'A' : 'B',
-            isPreSpec: false,
-            industryStatus,
-            industryCode: indstCd,
-            industryName: indstNm
-          });
+          for (const kw of matchedKw) {
+            if (!existing.matchedKeywords.includes(kw)) existing.matchedKeywords.push(kw);
+          }
+          continue;
         }
+
+        const sucsfbidMthd = item.sucsfbidMthdNm || '';
+        const techRate = item.techAbltEvlRt || '';
+        const isTrackA =
+          (techRate && techRate !== '0') ||
+          sucsfbidMthd.includes('제안') ||
+          sucsfbidMthd.includes('협상') ||
+          TRACK_A_PATTERNS.some(p => name.includes(p));
+        const indstCd = item.indstrytyCd || '';
+        const indstNm = item.indstrytyLmtNm || '';
+        const hasIndstLimit = item.indstrytyLmtYn === 'Y' || indstCd || indstNm;
+        let industryStatus = 'unknown';
+        if (!hasIndstLimit) industryStatus = 'no_limit';
+        else if (indstCd.includes(TARGET_INDUSTRY_CODE) || indstNm.includes('실내건축')) industryStatus = 'match';
+        else industryStatus = 'mismatch';
+
+        itemMap.set(key, {
+          ...item,
+          matchedKeywords: matchedKw,
+          track: isTrackA ? 'A' : 'B',
+          isPreSpec: false,
+          industryStatus,
+          industryCode: indstCd,
+          industryName: indstNm
+        });
       }
     }
 
+    // 사전규격 처리
     for (const { items } of preSpecResults) {
       const list = Array.isArray(items) ? items : [items];
       for (const item of list) {
