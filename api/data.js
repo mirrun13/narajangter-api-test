@@ -21,7 +21,7 @@ export default async function handler(req, res) {
   const forceRefresh = req.query.refresh === 'true';
 
   try {
-    const cacheKey = 'bid_data_v10';
+    const cacheKey = 'bid_data_v11';
     if (!forceRefresh) {
       const cached = await kv.get(cacheKey);
       if (cached) {
@@ -38,29 +38,38 @@ export default async function handler(req, res) {
     };
 
     const now = new Date();
+
+    // 입찰공고용: 30일씩 2구간 (60일)
     const day30 = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
     const day60 = new Date(now.getTime() - 60 * 24 * 60 * 60 * 1000);
-
-    const ranges = [
+    const bidRanges = [
       { bgn: fmt(day30) + "0000", end: fmt(now) + "2359" },
       { bgn: fmt(day60) + "0000", end: fmt(day30) + "2359" }
     ];
 
-    // PPSSrch (조달청 자체 공고)
+    // 사전규격용: 10일씩 6구간 (60일)
+    const preSpecRanges = [];
+    for (let i = 0; i < 6; i++) {
+      const start = new Date(now.getTime() - (i + 1) * 10 * 24 * 60 * 60 * 1000);
+      const end = new Date(now.getTime() - i * 10 * 24 * 60 * 60 * 1000);
+      preSpecRanges.push({
+        bgn: fmt(start) + "0000",
+        end: fmt(end) + "2359"
+      });
+    }
+
     const buildBidPPSSrchUrl = (keyword, range) =>
       `https://apis.data.go.kr/1230000/ad/BidPublicInfoService/getBidPblancListInfoServcPPSSrch?` +
       `ServiceKey=${API_KEY}&type=json&inqryDiv=1` +
       `&inqryBgnDt=${range.bgn}&inqryEndDt=${range.end}` +
       `&pageNo=1&numOfRows=100&bidNtceNm=${encodeURIComponent(keyword)}`;
 
-    // 일반 용역 (지자체 등)
     const buildBidServcUrl = (keyword, range) =>
       `https://apis.data.go.kr/1230000/ad/BidPublicInfoService/getBidPblancListInfoServc?` +
       `ServiceKey=${API_KEY}&type=json&inqryDiv=1` +
       `&inqryBgnDt=${range.bgn}&inqryEndDt=${range.end}` +
       `&pageNo=1&numOfRows=100&bidNtceNm=${encodeURIComponent(keyword)}`;
 
-    // 공사
     const buildBidCnstwkUrl = (keyword, range) =>
       `https://apis.data.go.kr/1230000/ad/BidPublicInfoService/getBidPblancListInfoCnstwk?` +
       `ServiceKey=${API_KEY}&type=json&inqryDiv=1` +
@@ -71,32 +80,29 @@ export default async function handler(req, res) {
       `https://apis.data.go.kr/1230000/ao/HrcspSsstndrdInfoService/getPublicPrcureThngInfoServc?` +
       `ServiceKey=${API_KEY}&type=json&inqryDiv=1` +
       `&inqryBgnDt=${range.bgn}&inqryEndDt=${range.end}` +
-      `&pageNo=${pageNo}&numOfRows=200`;
+      `&pageNo=${pageNo}&numOfRows=500`;
 
     const buildPreSpecCnstwkUrl = (range, pageNo) =>
       `https://apis.data.go.kr/1230000/ao/HrcspSsstndrdInfoService/getPublicPrcureThngInfoCnstwk?` +
       `ServiceKey=${API_KEY}&type=json&inqryDiv=1` +
       `&inqryBgnDt=${range.bgn}&inqryEndDt=${range.end}` +
-      `&pageNo=${pageNo}&numOfRows=200`;
+      `&pageNo=${pageNo}&numOfRows=500`;
 
     const bidTasks = [];
     for (const keyword of KEYWORDS) {
-      for (const range of ranges) {
-        // PPSSrch
+      for (const range of bidRanges) {
         bidTasks.push(
           fetch(buildBidPPSSrchUrl(keyword, range))
             .then(r => r.json())
             .then(data => ({ keyword, items: data?.response?.body?.items || [] }))
             .catch(() => ({ keyword, items: [] }))
         );
-        // Servc (NEW)
         bidTasks.push(
           fetch(buildBidServcUrl(keyword, range))
             .then(r => r.json())
             .then(data => ({ keyword, items: data?.response?.body?.items || [] }))
             .catch(() => ({ keyword, items: [] }))
         );
-        // Cnstwk (NEW)
         bidTasks.push(
           fetch(buildBidCnstwkUrl(keyword, range))
             .then(r => r.json())
@@ -106,9 +112,10 @@ export default async function handler(req, res) {
       }
     }
 
+    // 사전규격: 10일 × 6구간 × 2페이지 × 2종류 = 24호출
     const preSpecTasks = [];
-    for (const range of ranges) {
-      for (let page = 1; page <= 10; page++) {
+    for (const range of preSpecRanges) {
+      for (let page = 1; page <= 2; page++) {
         preSpecTasks.push(
           fetch(buildPreSpecServcUrl(range, page))
             .then(r => r.json())
