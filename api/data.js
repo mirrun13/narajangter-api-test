@@ -21,7 +21,7 @@ export default async function handler(req, res) {
   const forceRefresh = req.query.refresh === 'true';
 
   try {
-    const cacheKey = 'bid_data_v8';
+    const cacheKey = 'bid_data_v10';
     if (!forceRefresh) {
       const cached = await kv.get(cacheKey);
       if (cached) {
@@ -46,8 +46,23 @@ export default async function handler(req, res) {
       { bgn: fmt(day60) + "0000", end: fmt(day30) + "2359" }
     ];
 
-    const buildBidUrl = (keyword, range) =>
+    // PPSSrch (조달청 자체 공고)
+    const buildBidPPSSrchUrl = (keyword, range) =>
       `https://apis.data.go.kr/1230000/ad/BidPublicInfoService/getBidPblancListInfoServcPPSSrch?` +
+      `ServiceKey=${API_KEY}&type=json&inqryDiv=1` +
+      `&inqryBgnDt=${range.bgn}&inqryEndDt=${range.end}` +
+      `&pageNo=1&numOfRows=100&bidNtceNm=${encodeURIComponent(keyword)}`;
+
+    // 일반 용역 (지자체 등)
+    const buildBidServcUrl = (keyword, range) =>
+      `https://apis.data.go.kr/1230000/ad/BidPublicInfoService/getBidPblancListInfoServc?` +
+      `ServiceKey=${API_KEY}&type=json&inqryDiv=1` +
+      `&inqryBgnDt=${range.bgn}&inqryEndDt=${range.end}` +
+      `&pageNo=1&numOfRows=100&bidNtceNm=${encodeURIComponent(keyword)}`;
+
+    // 공사
+    const buildBidCnstwkUrl = (keyword, range) =>
+      `https://apis.data.go.kr/1230000/ad/BidPublicInfoService/getBidPblancListInfoCnstwk?` +
       `ServiceKey=${API_KEY}&type=json&inqryDiv=1` +
       `&inqryBgnDt=${range.bgn}&inqryEndDt=${range.end}` +
       `&pageNo=1&numOfRows=100&bidNtceNm=${encodeURIComponent(keyword)}`;
@@ -67,8 +82,23 @@ export default async function handler(req, res) {
     const bidTasks = [];
     for (const keyword of KEYWORDS) {
       for (const range of ranges) {
+        // PPSSrch
         bidTasks.push(
-          fetch(buildBidUrl(keyword, range))
+          fetch(buildBidPPSSrchUrl(keyword, range))
+            .then(r => r.json())
+            .then(data => ({ keyword, items: data?.response?.body?.items || [] }))
+            .catch(() => ({ keyword, items: [] }))
+        );
+        // Servc (NEW)
+        bidTasks.push(
+          fetch(buildBidServcUrl(keyword, range))
+            .then(r => r.json())
+            .then(data => ({ keyword, items: data?.response?.body?.items || [] }))
+            .catch(() => ({ keyword, items: [] }))
+        );
+        // Cnstwk (NEW)
+        bidTasks.push(
+          fetch(buildBidCnstwkUrl(keyword, range))
             .then(r => r.json())
             .then(data => ({ keyword, items: data?.response?.body?.items || [] }))
             .catch(() => ({ keyword, items: [] }))
