@@ -11,15 +11,32 @@ export default async function handler(req, res) {
 
   // ===== 설정 =====
   const API_KEY = "183930463902db8616a702c3c3c875687e7f85b717d1ac6352473b3b9d390f5f";
-  const KEYWORDS = ["전시", "홍보관", "과학관", "체험", "박물관", "행사", "홍보", "인테리어", "디자인", "공간", "서울"];
+
+  // 키워드 확장 (11 → 28개)
+  const KEYWORDS = [
+    // 기존 11개
+    "전시", "홍보관", "과학관", "체험", "박물관", "행사", "홍보", "인테리어", "디자인", "공간", "서울",
+    // 추가 - 시설 (8개)
+    "미술관", "갤러리", "기념관", "아트센터", "문화관", "교육관", "문화재", "관광",
+    // 추가 - 콘텐츠/기술 (5개)
+    "미디어아트", "실감콘텐츠", "VR", "AR", "메타버스",
+    // 추가 - 공사 유형 (4개)
+    "리뉴얼", "리모델링", "개보수", "구축"
+  ];
+
   const TRACK_A_PATTERNS = ['협상', '기술제안', '제안서', '2단계', '설계공모'];
   const TARGET_INDUSTRY_CODE = "4990";
   const CACHE_TTL = 86400;
   const forceRefresh = req.query.refresh === 'true';
 
+  // 페이지네이션 설정
+  const NUM_OF_ROWS = 500;   // 1페이지당 건수 (100 → 500)
+  const MAX_PAGES = 3;       // 키워드당 최대 페이지 (= 최대 1500건)
+  const SEARCH_DAYS = 90;    // 검색 기간 (60 → 90일)
+
   try {
-    // ===== 캐시 확인 =====
-    const cacheKey = 'bid_data_v6';
+    // ===== 캐시 확인 (v7로 버전 업) =====
+    const cacheKey = 'bid_data_v7';
     if (!forceRefresh) {
       const cached = await kv.get(cacheKey);
       if (cached) {
@@ -37,62 +54,86 @@ export default async function handler(req, res) {
     };
 
     const now = new Date();
-    const day30 = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-    const day60 = new Date(now.getTime() - 60 * 24 * 60 * 60 * 1000);
+    const half = SEARCH_DAYS / 2;
+    const dayHalf = new Date(now.getTime() - half * 24 * 60 * 60 * 1000);
+    const dayFull = new Date(now.getTime() - SEARCH_DAYS * 24 * 60 * 60 * 1000);
 
     const ranges = [
-      { bgn: fmt(day30) + "0000", end: fmt(now) + "2359" },
-      { bgn: fmt(day60) + "0000", end: fmt(day30) + "2359" }
+      { bgn: fmt(dayHalf) + "0000", end: fmt(now) + "2359" },
+      { bgn: fmt(dayFull) + "0000", end: fmt(dayHalf) + "2359" }
     ];
 
-    // ===== URL 빌더 =====
-    const buildBidUrl = (keyword, range) =>
+    // ===== URL 빌더 (페이지 파라미터 추가) =====
+    const buildBidUrl = (keyword, range, pageNo) =>
       `https://apis.data.go.kr/1230000/ad/BidPublicInfoService/getBidPblancListInfoServcPPSSrch?` +
       `ServiceKey=${API_KEY}&type=json&inqryDiv=1` +
       `&inqryBgnDt=${range.bgn}&inqryEndDt=${range.end}` +
-      `&pageNo=1&numOfRows=100&bidNtceNm=${encodeURIComponent(keyword)}`;
+      `&pageNo=${pageNo}&numOfRows=${NUM_OF_ROWS}&bidNtceNm=${encodeURIComponent(keyword)}`;
 
     const buildPreSpecServcUrl = (range, pageNo) =>
       `https://apis.data.go.kr/1230000/ao/HrcspSsstndrdInfoService/getPublicPrcureThngInfoServc?` +
       `ServiceKey=${API_KEY}&type=json&inqryDiv=1` +
       `&inqryBgnDt=${range.bgn}&inqryEndDt=${range.end}` +
-      `&pageNo=${pageNo}&numOfRows=200`;
+      `&pageNo=${pageNo}&numOfRows=${NUM_OF_ROWS}`;
 
     const buildPreSpecCnstwkUrl = (range, pageNo) =>
       `https://apis.data.go.kr/1230000/ao/HrcspSsstndrdInfoService/getPublicPrcureThngInfoCnstwk?` +
       `ServiceKey=${API_KEY}&type=json&inqryDiv=1` +
       `&inqryBgnDt=${range.bgn}&inqryEndDt=${range.end}` +
-      `&pageNo=${pageNo}&numOfRows=200`;
+      `&pageNo=${pageNo}&numOfRows=${NUM_OF_ROWS}`;
 
-    // ===== API 호출 작업 생성 =====
+    // ===== 페이지네이션 헬퍼: 모든 페이지 자동 수집 =====
+    async function fetchAllPages(urlBuilder, urlArgs) {
+      const collected = [];
+      for (let page = 1; page <= MAX_PAGES; page++) {
+        try {
+          const url = urlBuilder(...urlArgs, page);
+          const r = await fetch(url);
+          const data = await r.json();
+          const items = data?.response?.body?.items;
+          const totalCount = parseInt(data?.response?.body?.totalCount || '0', 10);
+
+          if (!items) break;
+          const list = Array.isArray(items) ? items : [items];
+          if (list.length === 0) break;
+
+          collected.push(...list);
+
+          // 더 가져올 데이터 없으면 중단
+          if (collected.length >= totalCount) break;
+          if (list.length < NUM_OF_ROWS) break;
+        } catch (err) {
+          break;
+        }
+      }
+      return collected;
+    }
+
+    // ===== 입찰공고 수집 작업 =====
     const bidTasks = [];
     for (const keyword of KEYWORDS) {
       for (const range of ranges) {
         bidTasks.push(
-          fetch(buildBidUrl(keyword, range))
-            .then(r => r.json())
-            .then(data => ({ keyword, items: data?.response?.body?.items || [] }))
+          fetchAllPages(buildBidUrl, [keyword, range])
+            .then(items => ({ keyword, items }))
             .catch(() => ({ keyword, items: [] }))
         );
       }
     }
 
+    // ===== 사전규격 수집 작업 =====
     const preSpecTasks = [];
     for (const range of ranges) {
-      for (let page = 1; page <= 3; page++) {
-        preSpecTasks.push(
-          fetch(buildPreSpecServcUrl(range, page))
-            .then(r => r.json())
-            .then(data => ({ items: data?.response?.body?.items || [] }))
-            .catch(() => ({ items: [] }))
-        );
-        preSpecTasks.push(
-          fetch(buildPreSpecCnstwkUrl(range, page))
-            .then(r => r.json())
-            .then(data => ({ items: data?.response?.body?.items || [] }))
-            .catch(() => ({ items: [] }))
-        );
-      }
+      preSpecTasks.push(
+        fetchAllPages(buildPreSpecServcUrl, [range])
+          .then(items => ({ items }))
+          .catch(() => ({ items: [] }))
+      );
+      preSpecTasks.push(
+        fetchAllPages(buildPreSpecCnstwkUrl, [range])
+          .then(items => ({ items }))
+          .catch(() => ({ items: [] }))
+      );
     }
 
     // ===== 병렬 실행 =====
@@ -105,8 +146,7 @@ export default async function handler(req, res) {
 
     // ===== 입찰공고 처리 =====
     for (const { keyword, items } of bidResults) {
-      const list = Array.isArray(items) ? items : [items];
-      for (const item of list) {
+      for (const item of items) {
         if (!item) continue;
 
         const key = `${item.bidNtceNo || ''}-${item.bidNtceOrd || '000'}-bid`;
@@ -155,10 +195,26 @@ export default async function handler(req, res) {
       }
     }
 
-    // ===== 사전규격 처리 (클라이언트 필터링) =====
+    // ===== 다중 필드 매칭 보강 =====
+    // 가져온 공고에 대해 공고명+기관명+업종명에서 추가 키워드 매칭
+    for (const [, item] of itemMap) {
+      const searchText = [
+        item.bidNtceNm || '',
+        item.dminsttNm || '',
+        item.ntceInsttNm || '',
+        item.indstrytyLmtNm || ''
+      ].join(' ');
+
+      for (const kw of KEYWORDS) {
+        if (searchText.includes(kw) && !item.matchedKeywords.includes(kw)) {
+          item.matchedKeywords.push(kw);
+        }
+      }
+    }
+
+    // ===== 사전규격 처리 (다중 필드 매칭) =====
     for (const { items } of preSpecResults) {
-      const list = Array.isArray(items) ? items : [items];
-      for (const item of list) {
+      for (const item of items) {
         if (!item) continue;
 
         const name   = item.prdctClsfcNoNm || '';
@@ -214,6 +270,8 @@ export default async function handler(req, res) {
       trackACount: allItems.filter(i => i.track === 'A').length,
       trackBCount: allItems.filter(i => i.track === 'B').length,
       preSpecCount: allItems.filter(i => i.track === 'P').length,
+      searchDays: SEARCH_DAYS,
+      keywordCount: KEYWORDS.length,
       items: allItems
     };
 
