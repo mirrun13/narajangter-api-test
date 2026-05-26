@@ -12,15 +12,14 @@ export default async function handler(req, res) {
   // ===== 설정 =====
   const API_KEY = "183930463902db8616a702c3c3c875687e7f85b717d1ac6352473b3b9d390f5f";
 
-  // 키워드 확장 (11 → 28개)
   const KEYWORDS = [
     // 기존 11개
     "전시", "홍보관", "과학관", "체험", "박물관", "행사", "홍보", "인테리어", "디자인", "공간", "서울",
-    // 추가 - 시설 (8개)
+    // 시설
     "미술관", "갤러리", "기념관", "아트센터", "문화관", "교육관", "문화재", "관광",
-    // 추가 - 콘텐츠/기술 (5개)
+    // 콘텐츠/기술
     "미디어아트", "실감콘텐츠", "VR", "AR", "메타버스",
-    // 추가 - 공사 유형 (4개)
+    // 공사 유형
     "리뉴얼", "리모델링", "개보수", "구축"
   ];
 
@@ -29,14 +28,21 @@ export default async function handler(req, res) {
   const CACHE_TTL = 86400;
   const forceRefresh = req.query.refresh === 'true';
 
-  // 페이지네이션 설정
-  const NUM_OF_ROWS = 500;   // 1페이지당 건수 (100 → 500)
-  const MAX_PAGES = 3;       // 키워드당 최대 페이지 (= 최대 1500건)
-  const SEARCH_DAYS = 90;    // 검색 기간 (60 → 90일)
+  // ===== 안전 설정 (v7.1 핵심) =====
+  const BID_NUM_OF_ROWS     = 100;  // 입찰공고는 100 고정 (안전)
+  const PRESPEC_NUM_OF_ROWS = 200;  // 사전규격은 200
+  const BID_MAX_PAGES       = 5;    // 키워드당 최대 500건
+  const PRESPEC_MAX_PAGES   = 5;    // 기간당 최대 1000건
+  const CHUNK_SIZE          = 14;   // 동시 호출 제한 ⭐
+  const SEARCH_DAYS         = 90;
+
+  // ===== 디버그 카운터 =====
+  let apiSuccessCount = 0;
+  let apiErrorCount = 0;
 
   try {
-    // ===== 캐시 확인 (v7로 버전 업) =====
-    const cacheKey = 'bid_data_v7';
+    // ===== 캐시 확인 (v7_1으로 강제 갱신) =====
+    const cacheKey = 'bid_data_v7_1';
     if (!forceRefresh) {
       const cached = await kv.get(cacheKey);
       if (cached) {
@@ -63,29 +69,40 @@ export default async function handler(req, res) {
       { bgn: fmt(dayFull) + "0000", end: fmt(dayHalf) + "2359" }
     ];
 
-    // ===== URL 빌더 (페이지 파라미터 추가) =====
+    // ===== URL 빌더 =====
     const buildBidUrl = (keyword, range, pageNo) =>
       `https://apis.data.go.kr/1230000/ad/BidPublicInfoService/getBidPblancListInfoServcPPSSrch?` +
       `ServiceKey=${API_KEY}&type=json&inqryDiv=1` +
       `&inqryBgnDt=${range.bgn}&inqryEndDt=${range.end}` +
-      `&pageNo=${pageNo}&numOfRows=${NUM_OF_ROWS}&bidNtceNm=${encodeURIComponent(keyword)}`;
+      `&pageNo=${pageNo}&numOfRows=${BID_NUM_OF_ROWS}&bidNtceNm=${encodeURIComponent(keyword)}`;
 
     const buildPreSpecServcUrl = (range, pageNo) =>
       `https://apis.data.go.kr/1230000/ao/HrcspSsstndrdInfoService/getPublicPrcureThngInfoServc?` +
       `ServiceKey=${API_KEY}&type=json&inqryDiv=1` +
       `&inqryBgnDt=${range.bgn}&inqryEndDt=${range.end}` +
-      `&pageNo=${pageNo}&numOfRows=${NUM_OF_ROWS}`;
+      `&pageNo=${pageNo}&numOfRows=${PRESPEC_NUM_OF_ROWS}`;
 
     const buildPreSpecCnstwkUrl = (range, pageNo) =>
       `https://apis.data.go.kr/1230000/ao/HrcspSsstndrdInfoService/getPublicPrcureThngInfoCnstwk?` +
       `ServiceKey=${API_KEY}&type=json&inqryDiv=1` +
       `&inqryBgnDt=${range.bgn}&inqryEndDt=${range.end}` +
-      `&pageNo=${pageNo}&numOfRows=${NUM_OF_ROWS}`;
+      `&pageNo=${pageNo}&numOfRows=${PRESPEC_NUM_OF_ROWS}`;
 
-    // ===== 페이지네이션 헬퍼: 모든 페이지 자동 수집 =====
-    async function fetchAllPages(urlBuilder, urlArgs) {
+    // ===== 청크 단위 병렬 처리 (동시 호출 제한) =====
+    async function processInChunks(taskFns, chunkSize) {
+      const results = [];
+      for (let i = 0; i < taskFns.length; i += chunkSize) {
+        const chunk = taskFns.slice(i, i + chunkSize);
+        const chunkResults = await Promise.all(chunk.map(fn => fn()));
+        results.push(...chunkResults);
+      }
+      return results;
+    }
+
+    // ===== 페이지네이션 헬퍼 =====
+    async function fetchAllPages(urlBuilder, urlArgs, maxPages, numRows) {
       const collected = [];
-      for (let page = 1; page <= MAX_PAGES; page++) {
+      for (let page = 1; page <= maxPages; page++) {
         try {
           const url = urlBuilder(...urlArgs, page);
           const r = await fetch(url);
@@ -93,53 +110,57 @@ export default async function handler(req, res) {
           const items = data?.response?.body?.items;
           const totalCount = parseInt(data?.response?.body?.totalCount || '0', 10);
 
-          if (!items) break;
+          if (!items) {
+            apiErrorCount++;
+            break;
+          }
           const list = Array.isArray(items) ? items : [items];
           if (list.length === 0) break;
 
+          apiSuccessCount++;
           collected.push(...list);
 
-          // 더 가져올 데이터 없으면 중단
           if (collected.length >= totalCount) break;
-          if (list.length < NUM_OF_ROWS) break;
+          if (list.length < numRows) break;
         } catch (err) {
+          apiErrorCount++;
           break;
         }
       }
       return collected;
     }
 
-    // ===== 입찰공고 수집 작업 =====
-    const bidTasks = [];
+    // ===== 입찰공고 작업 함수 생성 =====
+    const bidTaskFns = [];
     for (const keyword of KEYWORDS) {
       for (const range of ranges) {
-        bidTasks.push(
-          fetchAllPages(buildBidUrl, [keyword, range])
+        bidTaskFns.push(() =>
+          fetchAllPages(buildBidUrl, [keyword, range], BID_MAX_PAGES, BID_NUM_OF_ROWS)
             .then(items => ({ keyword, items }))
             .catch(() => ({ keyword, items: [] }))
         );
       }
     }
 
-    // ===== 사전규격 수집 작업 =====
-    const preSpecTasks = [];
+    // ===== 사전규격 작업 함수 생성 =====
+    const preSpecTaskFns = [];
     for (const range of ranges) {
-      preSpecTasks.push(
-        fetchAllPages(buildPreSpecServcUrl, [range])
+      preSpecTaskFns.push(() =>
+        fetchAllPages(buildPreSpecServcUrl, [range], PRESPEC_MAX_PAGES, PRESPEC_NUM_OF_ROWS)
           .then(items => ({ items }))
           .catch(() => ({ items: [] }))
       );
-      preSpecTasks.push(
-        fetchAllPages(buildPreSpecCnstwkUrl, [range])
+      preSpecTaskFns.push(() =>
+        fetchAllPages(buildPreSpecCnstwkUrl, [range], PRESPEC_MAX_PAGES, PRESPEC_NUM_OF_ROWS)
           .then(items => ({ items }))
           .catch(() => ({ items: [] }))
       );
     }
 
-    // ===== 병렬 실행 =====
+    // ===== 청크 단위 병렬 실행 =====
     const [bidResults, preSpecResults] = await Promise.all([
-      Promise.all(bidTasks),
-      Promise.all(preSpecTasks)
+      processInChunks(bidTaskFns, CHUNK_SIZE),
+      processInChunks(preSpecTaskFns, CHUNK_SIZE)
     ]);
 
     const itemMap = new Map();
@@ -196,7 +217,6 @@ export default async function handler(req, res) {
     }
 
     // ===== 다중 필드 매칭 보강 =====
-    // 가져온 공고에 대해 공고명+기관명+업종명에서 추가 키워드 매칭
     for (const [, item] of itemMap) {
       const searchText = [
         item.bidNtceNm || '',
@@ -212,7 +232,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // ===== 사전규격 처리 (다중 필드 매칭) =====
+    // ===== 사전규격 처리 =====
     for (const { items } of preSpecResults) {
       for (const item of items) {
         if (!item) continue;
@@ -272,6 +292,15 @@ export default async function handler(req, res) {
       preSpecCount: allItems.filter(i => i.track === 'P').length,
       searchDays: SEARCH_DAYS,
       keywordCount: KEYWORDS.length,
+      // 디버그 정보 (문제 진단용)
+      debug: {
+        apiSuccessCount,
+        apiErrorCount,
+        bidNumOfRows: BID_NUM_OF_ROWS,
+        bidMaxPages: BID_MAX_PAGES,
+        chunkSize: CHUNK_SIZE,
+        version: 'v7.1'
+      },
       items: allItems
     };
 
@@ -281,6 +310,10 @@ export default async function handler(req, res) {
     return res.status(200).json({ ...payload, cached: false, cacheAge: 0 });
 
   } catch (error) {
-    return res.status(500).json({ success: false, error: error.message });
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+      debug: { apiSuccessCount, apiErrorCount }
+    });
   }
 }
