@@ -28,23 +28,23 @@ export default async function handler(req, res) {
   const CACHE_TTL = 86400;
   const forceRefresh = req.query.refresh === 'true';
 
-  // ===== 안전 설정 (v7.1 핵심) =====
+  // ===== 안전 설정 (v7.2) =====
   const BID_NUM_OF_ROWS     = 100;  // 입찰공고는 100 고정 (안전)
   const PRESPEC_NUM_OF_ROWS = 200;  // 사전규격은 200
   const BID_MAX_PAGES       = 5;    // 키워드당 최대 500건
   const PRESPEC_MAX_PAGES   = 5;    // 기간당 최대 1000건
-  const CHUNK_SIZE          = 7;   // 동시 호출 제한 ⭐
+  const CHUNK_SIZE          = 7;    // 동시 호출 제한 (14→7로 축소) ⭐
   const SEARCH_DAYS         = 90;
+  const CACHE_KEY           = 'bid_data_v7_2';  // 캐시 키 (단일 선언) ⭐
 
   // ===== 디버그 카운터 =====
   let apiSuccessCount = 0;
   let apiErrorCount = 0;
 
   try {
-    // ===== 캐시 확인 (v7_1으로 강제 갱신) =====
-    const CACHE_KEY = 'bid_data_v7_2';
+    // ===== 캐시 확인 =====
     if (!forceRefresh) {
-      const cached = await kv.get(cacheKey);
+      const cached = await kv.get(CACHE_KEY);  // ✅ 수정
       if (cached) {
         const age = cached.cachedAt ? Math.floor((Date.now() - cached.cachedAt) / 1000) : 0;
         return res.status(200).json({ ...cached.payload, cached: true, cacheAge: age });
@@ -292,20 +292,19 @@ export default async function handler(req, res) {
       preSpecCount: allItems.filter(i => i.track === 'P').length,
       searchDays: SEARCH_DAYS,
       keywordCount: KEYWORDS.length,
-      // 디버그 정보 (문제 진단용)
       debug: {
         apiSuccessCount,
         apiErrorCount,
         bidNumOfRows: BID_NUM_OF_ROWS,
         bidMaxPages: BID_MAX_PAGES,
         chunkSize: CHUNK_SIZE,
-        version: 'v7.1'
+        version: 'v7.2'  // ✅ 수정
       },
       items: allItems
     };
 
     // ===== 캐시 저장 =====
-    await kv.set(cacheKey, { payload, cachedAt: Date.now() }, { ex: CACHE_TTL });
+    await kv.set(CACHE_KEY, { payload, cachedAt: Date.now() }, { ex: CACHE_TTL });  // ✅ 수정
 
     return res.status(200).json({ ...payload, cached: false, cacheAge: 0 });
 
