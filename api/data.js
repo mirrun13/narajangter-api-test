@@ -21,7 +21,7 @@ export default async function handler(req, res) {
   const forceRefresh = req.query.refresh === 'true';
 
   try {
-    const cacheKey = 'bid_data_v12';
+    const cacheKey = 'bid_data_v13';
     if (!forceRefresh) {
       const cached = await kv.get(cacheKey);
       if (cached) {
@@ -38,8 +38,6 @@ export default async function handler(req, res) {
     };
 
     const now = new Date();
-
-    // 통일: 30일씩 4구간 = 120일
     const ranges = [];
     for (let i = 0; i < 4; i++) {
       const start = new Date(now.getTime() - (i + 1) * 30 * 24 * 60 * 60 * 1000);
@@ -104,7 +102,6 @@ export default async function handler(req, res) {
       }
     }
 
-    // 사전규격도 30일×4구간, 페이지는 5까지 (한 구간당 5,000건 가능)
     const preSpecTasks = [];
     for (const range of ranges) {
       for (let page = 1; page <= 5; page++) {
@@ -130,6 +127,7 @@ export default async function handler(req, res) {
 
     const itemMap = new Map();
 
+    // 입찰공고 - 필요한 필드만 추출
     for (const { keyword, items } of bidResults) {
       const list = Array.isArray(items) ? items : [items];
       for (const item of list) {
@@ -154,8 +152,26 @@ export default async function handler(req, res) {
           if (!hasIndstLimit) industryStatus = 'no_limit';
           else if (indstCd.includes(TARGET_INDUSTRY_CODE) || indstNm.includes('실내건축')) industryStatus = 'match';
           else industryStatus = 'mismatch';
+
           itemMap.set(key, {
-            ...item,
+            bidNtceNo: item.bidNtceNo || '',
+            bidNtceOrd: item.bidNtceOrd || '',
+            bidNtceNm: name,
+            bidNtceDt: item.bidNtceDt || '',
+            bidClseDt: item.bidClseDt || '',
+            opengDt: item.opengDt || '',
+            ntceKindNm: item.ntceKindNm || '',
+            ntceInsttNm: item.ntceInsttNm || '',
+            dminsttNm: item.dminsttNm || '',
+            presmptPrce: item.presmptPrce || '0',
+            asignBdgtAmt: item.asignBdgtAmt || '0',
+            bidNtceUrl: item.bidNtceUrl || item.bidNtceDtlUrl || '',
+            sucsfbidMthdNm: sucsfbidMthd,
+            techAbltEvlRt: techRate,
+            bidPrtcptLmtYn: item.bidPrtcptLmtYn || 'N',
+            jntcontrctDutyRgnNm1: item.jntcontrctDutyRgnNm1 || '',
+            cntrctCnclsMthdNm: item.cntrctCnclsMthdNm || '',
+            refNo: item.refNo || '',
             matchedKeywords: [keyword],
             track: isTrackA ? 'A' : 'B',
             isPreSpec: false,
@@ -167,6 +183,7 @@ export default async function handler(req, res) {
       }
     }
 
+    // 사전규격 - 필요한 필드만 추출
     for (const { items } of preSpecResults) {
       const list = Array.isArray(items) ? items : [items];
       for (const item of list) {
@@ -184,13 +201,24 @@ export default async function handler(req, res) {
           }
         } else {
           itemMap.set(key, {
-            ...item,
             bidNtceNo: item.bfSpecRgstNo || '',
+            bidNtceOrd: '',
             bidNtceNm: name,
+            bidNtceDt: item.rgstDt || '',
+            bidClseDt: item.opninRgstClseDt || item.rcptDt || '',
+            opengDt: '',
+            ntceKindNm: '사전규격',
+            ntceInsttNm: item.dminsttNm || '',
             dminsttNm: client,
             presmptPrce: item.asignBdgtAmt || '0',
-            bidClseDt: item.opninRgstClseDt || item.rcptDt || '',
-            bidNtceDt: item.rgstDt || '',
+            asignBdgtAmt: item.asignBdgtAmt || '0',
+            bidNtceUrl: item.specDocFileUrl1 || '',
+            sucsfbidMthdNm: '',
+            techAbltEvlRt: '',
+            bidPrtcptLmtYn: 'N',
+            jntcontrctDutyRgnNm1: '',
+            cntrctCnclsMthdNm: '',
+            refNo: '',
             matchedKeywords: matchedKw,
             track: 'P',
             isPreSpec: true,
