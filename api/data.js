@@ -230,9 +230,9 @@ export default async function handler(req, res) {
       for (const item of list) {
         if (!item) continue;
         const name = item.bidNtceNm || '';
-       const matchedKw = KEYWORDS.filter(kw => name.includes(kw)).slice(0, 3);
+       const matchedKw = KEYWORDS.filter(kw => searchText.includes(kw)).slice(0, 3);
         if (matchedKw.length === 0) continue;
-        const key = `${item.bidNtceNo || ''}-${item.bidNtceOrd || '000'}-bid`;
+        const key = `${item.bfSpecRgstNo || ''}-pre`;
         if (itemMap.has(key)) {
           const existing = itemMap.get(key);
           for (const kw of matchedKw) {
@@ -240,6 +240,7 @@ export default async function handler(req, res) {
               existing.matchedKeywords.push(kw);
             }
           }
+        }
         } else {
           itemMap.set(key, makeBidEntry(item, matchedKw));
         }
