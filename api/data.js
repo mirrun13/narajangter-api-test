@@ -18,8 +18,8 @@ export default async function handler(req, res) {
   const TRACK_A_PATTERNS = ['협상','기술제안','제안서','2단계','설계공모'];
   const TARGET_INDUSTRY_CODE = "4990";
   const CACHE_TTL = 86400;
-  const CHUNK_SIZE = 50;           // 한 번에 50개씩 동시 호출
-  const MAX_RETRIES = 2;            // 실패 시 최대 2번 재시도
+  const CHUNK_SIZE = 200;          // 한 번에 200개씩 동시 호출
+  const MAX_RETRIES = 1;            // 실패 시 최대 1번 재시도
   const forceRefresh = req.query.refresh === 'true';
 
   try {
