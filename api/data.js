@@ -214,9 +214,11 @@ export default async function handler(req, res) {
       for (const item of list) {
         if (!item) continue;
         const key = `${item.bidNtceNo || ''}-${item.bidNtceOrd || '000'}-bid`;
-        if (itemMap.has(key)) {
+       if (itemMap.has(key)) {
           const existing = itemMap.get(key);
-          if (!existing.matchedKeywords.includes(keyword)) existing.matchedKeywords.push(keyword);
+          if (!existing.matchedKeywords.includes(keyword) && existing.matchedKeywords.length < 3) {
+            existing.matchedKeywords.push(keyword);
+          }
         } else {
           itemMap.set(key, makeBidEntry(item, [keyword]));
         }
