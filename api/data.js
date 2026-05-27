@@ -24,7 +24,7 @@ export default async function handler(req, res) {
   const forceRefresh = req.query.refresh === 'true';
 
   try {
-    const cacheKey = 'bid_data_v19';
+    const cacheKey = 'bid_data_v20';
     if (!forceRefresh) {
       const cached = await kv.get(cacheKey);
       if (cached) {
