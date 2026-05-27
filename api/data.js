@@ -230,13 +230,15 @@ export default async function handler(req, res) {
       for (const item of list) {
         if (!item) continue;
         const name = item.bidNtceNm || '';
-        const matchedKw = KEYWORDS.filter(kw => name.includes(kw));
+       const matchedKw = KEYWORDS.filter(kw => name.includes(kw)).slice(0, 3);
         if (matchedKw.length === 0) continue;
         const key = `${item.bidNtceNo || ''}-${item.bidNtceOrd || '000'}-bid`;
         if (itemMap.has(key)) {
           const existing = itemMap.get(key);
           for (const kw of matchedKw) {
-            if (!existing.matchedKeywords.includes(kw)) existing.matchedKeywords.push(kw);
+            if (!existing.matchedKeywords.includes(kw) && existing.matchedKeywords.length < 3) {
+              existing.matchedKeywords.push(kw);
+            }
           }
         } else {
           itemMap.set(key, makeBidEntry(item, matchedKw));
