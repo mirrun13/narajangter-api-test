@@ -278,7 +278,7 @@ export default async function handler(req, res) {
             dminsttNm: client,
             presmptPrce: item.asignBdgtAmt || '0',
             asignBdgtAmt: item.asignBdgtAmt || '0',
-            bidNtceUrl: item.specDocFileUrl1 || '',
+            bidNtceUrl: `https://www.g2b.go.kr/ep/preparation/prestd/preStdDtl.do?preStdRegNo=${item.bfSpecRgstNo}`,
             sucsfbidMthdNm: '',
             techAbltEvlRt: '',
             bidPrtcptLmtYn: 'N',
