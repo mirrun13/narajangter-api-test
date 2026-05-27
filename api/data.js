@@ -24,7 +24,7 @@ export default async function handler(req, res) {
   const forceRefresh = req.query.refresh === 'true';
 
   try {
-    const cacheKey = 'bid_data_v18';
+    const cacheKey = 'bid_data_v19';
     if (!forceRefresh) {
       const cached = await kv.get(cacheKey);
       if (cached) {
@@ -209,6 +209,8 @@ export default async function handler(req, res) {
       const list = Array.isArray(items) ? items : [items];
       for (const item of list) {
         if (!item) continue;
+        // 취소공고 제외
+        if (item.ntceKindNm === '취소공고') continue;
         const key = `${item.bidNtceNo || ''}-${item.bidNtceOrd || '000'}-bid`;
         if (itemMap.has(key)) {
           const existing = itemMap.get(key);
@@ -226,6 +228,8 @@ export default async function handler(req, res) {
       const list = Array.isArray(items) ? items : [items];
       for (const item of list) {
         if (!item) continue;
+        // 취소공고 제외
+        if (item.ntceKindNm === '취소공고') continue;
         const name = item.bidNtceNm || '';
         const matchedKw = KEYWORDS.filter(kw => name.includes(kw)).slice(0, MAX_KEYWORDS_PER_ITEM);
         if (matchedKw.length === 0) continue;
