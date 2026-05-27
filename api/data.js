@@ -18,10 +18,12 @@ export default async function handler(req, res) {
   const TRACK_A_PATTERNS = ['협상','기술제안','제안서','2단계','설계공모'];
   const TARGET_INDUSTRY_CODE = "4990";
   const CACHE_TTL = 86400;
+  const CHUNK_SIZE = 50;           // 한 번에 50개씩 동시 호출
+  const MAX_RETRIES = 2;            // 실패 시 최대 2번 재시도
   const forceRefresh = req.query.refresh === 'true';
 
   try {
-    const cacheKey = 'bid_data_v15';
+    const cacheKey = 'bid_data_v16';
     if (!forceRefresh) {
       const cached = await kv.get(cacheKey);
       if (cached) {
@@ -37,9 +39,35 @@ export default async function handler(req, res) {
       return `${y}${m}${day}`;
     };
 
+    // 재시도 fetch 함수
+    const fetchWithRetry = async (url, retries = MAX_RETRIES) => {
+      for (let i = 0; i <= retries; i++) {
+        try {
+          const r = await fetch(url);
+          const data = await r.json();
+          return data;
+        } catch (err) {
+          if (i === retries) return null;
+          await new Promise(r => setTimeout(r, 200 * (i + 1))); // 점차 길어지는 대기
+        }
+      }
+      return null;
+    };
+
+    // 청크 단위로 순차 실행
+    const runInChunks = async (tasks, chunkSize) => {
+      const results = [];
+      for (let i = 0; i < tasks.length; i += chunkSize) {
+        const chunk = tasks.slice(i, i + chunkSize);
+        const chunkResults = await Promise.all(chunk.map(t => t()));
+        results.push(...chunkResults);
+      }
+      return results;
+    };
+
     const now = new Date();
 
-    // 입찰공고용: 120일을 10일씩 12구간
+    // 입찰공고: 10일×12구간 = 120일
     const bidRanges = [];
     for (let i = 0; i < 12; i++) {
       const start = new Date(now.getTime() - (i + 1) * 10 * 24 * 60 * 60 * 1000);
@@ -50,7 +78,7 @@ export default async function handler(req, res) {
       });
     }
 
-    // 사전규격용: 60일을 1일씩 60구간
+    // 사전규격: 1일×60구간 = 60일
     const preSpecRanges = [];
     for (let i = 0; i < 60; i++) {
       const day = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
@@ -90,57 +118,48 @@ export default async function handler(req, res) {
       `&inqryBgnDt=${range.bgn}&inqryEndDt=${range.end}` +
       `&pageNo=1&numOfRows=500`;
 
+    // 작업 준비 (함수로 래핑해서 청크 실행 시점에 호출되도록)
     const ppsTasks = [];
     for (const keyword of KEYWORDS) {
       for (const range of bidRanges) {
-        ppsTasks.push(
-          fetch(buildBidPPSSrchUrl(keyword, range))
-            .then(r => r.json())
-            .then(data => ({ keyword, items: data?.response?.body?.items || [] }))
-            .catch(() => ({ keyword, items: [] }))
-        );
+        ppsTasks.push(async () => {
+          const data = await fetchWithRetry(buildBidPPSSrchUrl(keyword, range));
+          return { keyword, items: data?.response?.body?.items || [] };
+        });
       }
     }
 
     const fullScanTasks = [];
     for (const range of bidRanges) {
       for (let page = 1; page <= 10; page++) {
-        fullScanTasks.push(
-          fetch(buildBidServcUrl(range, page))
-            .then(r => r.json())
-            .then(data => ({ items: data?.response?.body?.items || [] }))
-            .catch(() => ({ items: [] }))
-        );
-        fullScanTasks.push(
-          fetch(buildBidCnstwkUrl(range, page))
-            .then(r => r.json())
-            .then(data => ({ items: data?.response?.body?.items || [] }))
-            .catch(() => ({ items: [] }))
-        );
+        fullScanTasks.push(async () => {
+          const data = await fetchWithRetry(buildBidServcUrl(range, page));
+          return { items: data?.response?.body?.items || [] };
+        });
+        fullScanTasks.push(async () => {
+          const data = await fetchWithRetry(buildBidCnstwkUrl(range, page));
+          return { items: data?.response?.body?.items || [] };
+        });
       }
     }
 
-    // 사전규격: 1일씩 60구간 × 2API = 120 호출
     const preSpecTasks = [];
     for (const range of preSpecRanges) {
-      preSpecTasks.push(
-        fetch(buildPreSpecServcUrl(range))
-          .then(r => r.json())
-          .then(data => ({ items: data?.response?.body?.items || [] }))
-          .catch(() => ({ items: [] }))
-      );
-      preSpecTasks.push(
-        fetch(buildPreSpecCnstwkUrl(range))
-          .then(r => r.json())
-          .then(data => ({ items: data?.response?.body?.items || [] }))
-          .catch(() => ({ items: [] }))
-      );
+      preSpecTasks.push(async () => {
+        const data = await fetchWithRetry(buildPreSpecServcUrl(range));
+        return { items: data?.response?.body?.items || [] };
+      });
+      preSpecTasks.push(async () => {
+        const data = await fetchWithRetry(buildPreSpecCnstwkUrl(range));
+        return { items: data?.response?.body?.items || [] };
+      });
     }
 
+    // 청크로 순차 실행
     const [ppsResults, fullResults, preSpecResults] = await Promise.all([
-      Promise.all(ppsTasks),
-      Promise.all(fullScanTasks),
-      Promise.all(preSpecTasks)
+      runInChunks(ppsTasks, CHUNK_SIZE),
+      runInChunks(fullScanTasks, CHUNK_SIZE),
+      runInChunks(preSpecTasks, CHUNK_SIZE)
     ]);
 
     const itemMap = new Map();
