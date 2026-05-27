@@ -21,7 +21,7 @@ export default async function handler(req, res) {
   const forceRefresh = req.query.refresh === 'true';
 
   try {
-    const cacheKey = 'bid_data_v13';
+    const cacheKey = 'bid_data_v14';
     if (!forceRefresh) {
       const cached = await kv.get(cacheKey);
       if (cached) {
@@ -38,33 +38,37 @@ export default async function handler(req, res) {
     };
 
     const now = new Date();
+
+    // 120일을 10일씩 12구간으로 쪼개기
     const ranges = [];
-    for (let i = 0; i < 4; i++) {
-      const start = new Date(now.getTime() - (i + 1) * 30 * 24 * 60 * 60 * 1000);
-      const end = new Date(now.getTime() - i * 30 * 24 * 60 * 60 * 1000);
+    for (let i = 0; i < 12; i++) {
+      const start = new Date(now.getTime() - (i + 1) * 10 * 24 * 60 * 60 * 1000);
+      const end = new Date(now.getTime() - i * 10 * 24 * 60 * 60 * 1000);
       ranges.push({
         bgn: fmt(start) + "0000",
         end: fmt(end) + "2359"
       });
     }
 
+    // PPSSrch: 키워드 검색 가능 (조달청 자체 공고)
     const buildBidPPSSrchUrl = (keyword, range) =>
       `https://apis.data.go.kr/1230000/ad/BidPublicInfoService/getBidPblancListInfoServcPPSSrch?` +
       `ServiceKey=${API_KEY}&type=json&inqryDiv=1` +
       `&inqryBgnDt=${range.bgn}&inqryEndDt=${range.end}` +
       `&pageNo=1&numOfRows=100&bidNtceNm=${encodeURIComponent(keyword)}`;
 
-    const buildBidServcUrl = (keyword, range) =>
+    // Servc/Cnstwk: 키워드 검색 불가, 전체 받아서 필터링
+    const buildBidServcUrl = (range, pageNo) =>
       `https://apis.data.go.kr/1230000/ad/BidPublicInfoService/getBidPblancListInfoServc?` +
       `ServiceKey=${API_KEY}&type=json&inqryDiv=1` +
       `&inqryBgnDt=${range.bgn}&inqryEndDt=${range.end}` +
-      `&pageNo=1&numOfRows=100&bidNtceNm=${encodeURIComponent(keyword)}`;
+      `&pageNo=${pageNo}&numOfRows=500`;
 
-    const buildBidCnstwkUrl = (keyword, range) =>
+    const buildBidCnstwkUrl = (range, pageNo) =>
       `https://apis.data.go.kr/1230000/ad/BidPublicInfoService/getBidPblancListInfoCnstwk?` +
       `ServiceKey=${API_KEY}&type=json&inqryDiv=1` +
       `&inqryBgnDt=${range.bgn}&inqryEndDt=${range.end}` +
-      `&pageNo=1&numOfRows=100&bidNtceNm=${encodeURIComponent(keyword)}`;
+      `&pageNo=${pageNo}&numOfRows=500`;
 
     const buildPreSpecServcUrl = (range, pageNo) =>
       `https://apis.data.go.kr/1230000/ao/HrcspSsstndrdInfoService/getPublicPrcureThngInfoServc?` +
@@ -78,57 +82,65 @@ export default async function handler(req, res) {
       `&inqryBgnDt=${range.bgn}&inqryEndDt=${range.end}` +
       `&pageNo=${pageNo}&numOfRows=500`;
 
-    const bidTasks = [];
+    // 모든 호출 준비
+    const ppsTasks = [];
     for (const keyword of KEYWORDS) {
       for (const range of ranges) {
-        bidTasks.push(
+        ppsTasks.push(
           fetch(buildBidPPSSrchUrl(keyword, range))
             .then(r => r.json())
-            .then(data => ({ keyword, items: data?.response?.body?.items || [] }))
-            .catch(() => ({ keyword, items: [] }))
+            .then(data => ({ source: 'pps', keyword, items: data?.response?.body?.items || [] }))
+            .catch(() => ({ source: 'pps', keyword, items: [] }))
         );
-        bidTasks.push(
-          fetch(buildBidServcUrl(keyword, range))
+      }
+    }
+
+    const fullScanTasks = [];
+    for (const range of ranges) {
+      for (let page = 1; page <= 10; page++) {
+        fullScanTasks.push(
+          fetch(buildBidServcUrl(range, page))
             .then(r => r.json())
-            .then(data => ({ keyword, items: data?.response?.body?.items || [] }))
-            .catch(() => ({ keyword, items: [] }))
+            .then(data => ({ source: 'servc', items: data?.response?.body?.items || [] }))
+            .catch(() => ({ source: 'servc', items: [] }))
         );
-        bidTasks.push(
-          fetch(buildBidCnstwkUrl(keyword, range))
+        fullScanTasks.push(
+          fetch(buildBidCnstwkUrl(range, page))
             .then(r => r.json())
-            .then(data => ({ keyword, items: data?.response?.body?.items || [] }))
-            .catch(() => ({ keyword, items: [] }))
+            .then(data => ({ source: 'cnstwk', items: data?.response?.body?.items || [] }))
+            .catch(() => ({ source: 'cnstwk', items: [] }))
         );
       }
     }
 
     const preSpecTasks = [];
     for (const range of ranges) {
-      for (let page = 1; page <= 5; page++) {
+      for (let page = 1; page <= 10; page++) {
         preSpecTasks.push(
           fetch(buildPreSpecServcUrl(range, page))
             .then(r => r.json())
-            .then(data => ({ items: data?.response?.body?.items || [] }))
-            .catch(() => ({ items: [] }))
+            .then(data => ({ source: 'pre_servc', items: data?.response?.body?.items || [] }))
+            .catch(() => ({ source: 'pre_servc', items: [] }))
         );
         preSpecTasks.push(
           fetch(buildPreSpecCnstwkUrl(range, page))
             .then(r => r.json())
-            .then(data => ({ items: data?.response?.body?.items || [] }))
-            .catch(() => ({ items: [] }))
+            .then(data => ({ source: 'pre_cnstwk', items: data?.response?.body?.items || [] }))
+            .catch(() => ({ source: 'pre_cnstwk', items: [] }))
         );
       }
     }
 
-    const [bidResults, preSpecResults] = await Promise.all([
-      Promise.all(bidTasks),
+    const [ppsResults, fullResults, preSpecResults] = await Promise.all([
+      Promise.all(ppsTasks),
+      Promise.all(fullScanTasks),
       Promise.all(preSpecTasks)
     ]);
 
     const itemMap = new Map();
 
-    // 입찰공고 - 필요한 필드만 추출
-    for (const { keyword, items } of bidResults) {
+    // 1) PPSSrch: 키워드 매칭 그대로
+    for (const { keyword, items } of ppsResults) {
       const list = Array.isArray(items) ? items : [items];
       for (const item of list) {
         if (!item) continue;
@@ -137,53 +149,32 @@ export default async function handler(req, res) {
           const existing = itemMap.get(key);
           if (!existing.matchedKeywords.includes(keyword)) existing.matchedKeywords.push(keyword);
         } else {
-          const name = item.bidNtceNm || '';
-          const sucsfbidMthd = item.sucsfbidMthdNm || '';
-          const techRate = item.techAbltEvlRt || '';
-          const isTrackA =
-            (techRate && techRate !== '0') ||
-            sucsfbidMthd.includes('제안') ||
-            sucsfbidMthd.includes('협상') ||
-            TRACK_A_PATTERNS.some(p => name.includes(p));
-          const indstCd = item.indstrytyCd || '';
-          const indstNm = item.indstrytyLmtNm || '';
-          const hasIndstLimit = item.indstrytyLmtYn === 'Y' || indstCd || indstNm;
-          let industryStatus = 'unknown';
-          if (!hasIndstLimit) industryStatus = 'no_limit';
-          else if (indstCd.includes(TARGET_INDUSTRY_CODE) || indstNm.includes('실내건축')) industryStatus = 'match';
-          else industryStatus = 'mismatch';
-
-          itemMap.set(key, {
-            bidNtceNo: item.bidNtceNo || '',
-            bidNtceOrd: item.bidNtceOrd || '',
-            bidNtceNm: name,
-            bidNtceDt: item.bidNtceDt || '',
-            bidClseDt: item.bidClseDt || '',
-            opengDt: item.opengDt || '',
-            ntceKindNm: item.ntceKindNm || '',
-            ntceInsttNm: item.ntceInsttNm || '',
-            dminsttNm: item.dminsttNm || '',
-            presmptPrce: item.presmptPrce || '0',
-            asignBdgtAmt: item.asignBdgtAmt || '0',
-            bidNtceUrl: item.bidNtceUrl || item.bidNtceDtlUrl || '',
-            sucsfbidMthdNm: sucsfbidMthd,
-            techAbltEvlRt: techRate,
-            bidPrtcptLmtYn: item.bidPrtcptLmtYn || 'N',
-            jntcontrctDutyRgnNm1: item.jntcontrctDutyRgnNm1 || '',
-            cntrctCnclsMthdNm: item.cntrctCnclsMthdNm || '',
-            refNo: item.refNo || '',
-            matchedKeywords: [keyword],
-            track: isTrackA ? 'A' : 'B',
-            isPreSpec: false,
-            industryStatus,
-            industryCode: indstCd,
-            industryName: indstNm
-          });
+          itemMap.set(key, makeBidEntry(item, [keyword]));
         }
       }
     }
 
-    // 사전규격 - 필요한 필드만 추출
+    // 2) Servc/Cnstwk: 전체 받아서 클라이언트 필터링
+    for (const { items } of fullResults) {
+      const list = Array.isArray(items) ? items : [items];
+      for (const item of list) {
+        if (!item) continue;
+        const name = item.bidNtceNm || '';
+        const matchedKw = KEYWORDS.filter(kw => name.includes(kw));
+        if (matchedKw.length === 0) continue;
+        const key = `${item.bidNtceNo || ''}-${item.bidNtceOrd || '000'}-bid`;
+        if (itemMap.has(key)) {
+          const existing = itemMap.get(key);
+          for (const kw of matchedKw) {
+            if (!existing.matchedKeywords.includes(kw)) existing.matchedKeywords.push(kw);
+          }
+        } else {
+          itemMap.set(key, makeBidEntry(item, matchedKw));
+        }
+      }
+    }
+
+    // 3) 사전규격
     for (const { items } of preSpecResults) {
       const list = Array.isArray(items) ? items : [items];
       for (const item of list) {
@@ -228,6 +219,51 @@ export default async function handler(req, res) {
           });
         }
       }
+    }
+
+    function makeBidEntry(item, keywords) {
+      const name = item.bidNtceNm || '';
+      const sucsfbidMthd = item.sucsfbidMthdNm || '';
+      const techRate = item.techAbltEvlRt || '';
+      const isTrackA =
+        (techRate && techRate !== '0') ||
+        sucsfbidMthd.includes('제안') ||
+        sucsfbidMthd.includes('협상') ||
+        TRACK_A_PATTERNS.some(p => name.includes(p));
+      const indstCd = item.indstrytyCd || '';
+      const indstNm = item.indstrytyLmtNm || '';
+      const hasIndstLimit = item.indstrytyLmtYn === 'Y' || indstCd || indstNm;
+      let industryStatus = 'unknown';
+      if (!hasIndstLimit) industryStatus = 'no_limit';
+      else if (indstCd.includes(TARGET_INDUSTRY_CODE) || indstNm.includes('실내건축')) industryStatus = 'match';
+      else industryStatus = 'mismatch';
+
+      return {
+        bidNtceNo: item.bidNtceNo || '',
+        bidNtceOrd: item.bidNtceOrd || '',
+        bidNtceNm: name,
+        bidNtceDt: item.bidNtceDt || '',
+        bidClseDt: item.bidClseDt || '',
+        opengDt: item.opengDt || '',
+        ntceKindNm: item.ntceKindNm || '',
+        ntceInsttNm: item.ntceInsttNm || '',
+        dminsttNm: item.dminsttNm || '',
+        presmptPrce: item.presmptPrce || '0',
+        asignBdgtAmt: item.asignBdgtAmt || '0',
+        bidNtceUrl: item.bidNtceUrl || item.bidNtceDtlUrl || '',
+        sucsfbidMthdNm: sucsfbidMthd,
+        techAbltEvlRt: techRate,
+        bidPrtcptLmtYn: item.bidPrtcptLmtYn || 'N',
+        jntcontrctDutyRgnNm1: item.jntcontrctDutyRgnNm1 || '',
+        cntrctCnclsMthdNm: item.cntrctCnclsMthdNm || '',
+        refNo: item.refNo || '',
+        matchedKeywords: keywords,
+        track: isTrackA ? 'A' : 'B',
+        isPreSpec: false,
+        industryStatus,
+        industryCode: indstCd,
+        industryName: indstNm
+      };
     }
 
     const allItems = Array.from(itemMap.values());
