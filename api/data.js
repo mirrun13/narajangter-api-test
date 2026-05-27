@@ -21,7 +21,7 @@ export default async function handler(req, res) {
   const forceRefresh = req.query.refresh === 'true';
 
   try {
-    const cacheKey = 'bid_data_v11';
+    const cacheKey = 'bid_data_v12';
     if (!forceRefresh) {
       const cached = await kv.get(cacheKey);
       if (cached) {
@@ -39,20 +39,12 @@ export default async function handler(req, res) {
 
     const now = new Date();
 
-    // 입찰공고용: 30일씩 2구간 (60일)
-    const day30 = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-    const day60 = new Date(now.getTime() - 60 * 24 * 60 * 60 * 1000);
-    const bidRanges = [
-      { bgn: fmt(day30) + "0000", end: fmt(now) + "2359" },
-      { bgn: fmt(day60) + "0000", end: fmt(day30) + "2359" }
-    ];
-
-    // 사전규격용: 10일씩 6구간 (60일)
-    const preSpecRanges = [];
-    for (let i = 0; i < 6; i++) {
-      const start = new Date(now.getTime() - (i + 1) * 10 * 24 * 60 * 60 * 1000);
-      const end = new Date(now.getTime() - i * 10 * 24 * 60 * 60 * 1000);
-      preSpecRanges.push({
+    // 통일: 30일씩 4구간 = 120일
+    const ranges = [];
+    for (let i = 0; i < 4; i++) {
+      const start = new Date(now.getTime() - (i + 1) * 30 * 24 * 60 * 60 * 1000);
+      const end = new Date(now.getTime() - i * 30 * 24 * 60 * 60 * 1000);
+      ranges.push({
         bgn: fmt(start) + "0000",
         end: fmt(end) + "2359"
       });
@@ -90,7 +82,7 @@ export default async function handler(req, res) {
 
     const bidTasks = [];
     for (const keyword of KEYWORDS) {
-      for (const range of bidRanges) {
+      for (const range of ranges) {
         bidTasks.push(
           fetch(buildBidPPSSrchUrl(keyword, range))
             .then(r => r.json())
@@ -112,10 +104,10 @@ export default async function handler(req, res) {
       }
     }
 
-    // 사전규격: 10일 × 6구간 × 2페이지 × 2종류 = 24호출
+    // 사전규격도 30일×4구간, 페이지는 5까지 (한 구간당 5,000건 가능)
     const preSpecTasks = [];
-    for (const range of preSpecRanges) {
-      for (let page = 1; page <= 2; page++) {
+    for (const range of ranges) {
+      for (let page = 1; page <= 5; page++) {
         preSpecTasks.push(
           fetch(buildPreSpecServcUrl(range, page))
             .then(r => r.json())
