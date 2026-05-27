@@ -18,12 +18,13 @@ export default async function handler(req, res) {
   const TRACK_A_PATTERNS = ['협상','기술제안','제안서','2단계','설계공모'];
   const TARGET_INDUSTRY_CODE = "4990";
   const CACHE_TTL = 86400;
-  const CHUNK_SIZE = 200;          // 한 번에 200개씩 동시 호출
-  const MAX_RETRIES = 1;            // 실패 시 최대 1번 재시도
+  const CHUNK_SIZE = 200;
+  const MAX_RETRIES = 1;
+  const MAX_KEYWORDS_PER_ITEM = 3;
   const forceRefresh = req.query.refresh === 'true';
 
   try {
-    const cacheKey = 'bid_data_v16';
+    const cacheKey = 'bid_data_v17';
     if (!forceRefresh) {
       const cached = await kv.get(cacheKey);
       if (cached) {
@@ -39,7 +40,6 @@ export default async function handler(req, res) {
       return `${y}${m}${day}`;
     };
 
-    // 재시도 fetch 함수
     const fetchWithRetry = async (url, retries = MAX_RETRIES) => {
       for (let i = 0; i <= retries; i++) {
         try {
@@ -48,13 +48,12 @@ export default async function handler(req, res) {
           return data;
         } catch (err) {
           if (i === retries) return null;
-          await new Promise(r => setTimeout(r, 200 * (i + 1))); // 점차 길어지는 대기
+          await new Promise(r => setTimeout(r, 200 * (i + 1)));
         }
       }
       return null;
     };
 
-    // 청크 단위로 순차 실행
     const runInChunks = async (tasks, chunkSize) => {
       const results = [];
       for (let i = 0; i < tasks.length; i += chunkSize) {
@@ -67,7 +66,6 @@ export default async function handler(req, res) {
 
     const now = new Date();
 
-    // 입찰공고: 10일×12구간 = 120일
     const bidRanges = [];
     for (let i = 0; i < 12; i++) {
       const start = new Date(now.getTime() - (i + 1) * 10 * 24 * 60 * 60 * 1000);
@@ -78,7 +76,6 @@ export default async function handler(req, res) {
       });
     }
 
-    // 사전규격: 1일×60구간 = 60일
     const preSpecRanges = [];
     for (let i = 0; i < 60; i++) {
       const day = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
@@ -118,7 +115,6 @@ export default async function handler(req, res) {
       `&inqryBgnDt=${range.bgn}&inqryEndDt=${range.end}` +
       `&pageNo=1&numOfRows=500`;
 
-    // 작업 준비 (함수로 래핑해서 청크 실행 시점에 호출되도록)
     const ppsTasks = [];
     for (const keyword of KEYWORDS) {
       for (const range of bidRanges) {
@@ -155,7 +151,6 @@ export default async function handler(req, res) {
       });
     }
 
-    // 청크로 순차 실행
     const [ppsResults, fullResults, preSpecResults] = await Promise.all([
       runInChunks(ppsTasks, CHUNK_SIZE),
       runInChunks(fullScanTasks, CHUNK_SIZE),
@@ -200,7 +195,7 @@ export default async function handler(req, res) {
         jntcontrctDutyRgnNm1: item.jntcontrctDutyRgnNm1 || '',
         cntrctCnclsMthdNm: item.cntrctCnclsMthdNm || '',
         refNo: item.refNo || '',
-        matchedKeywords: keywords,
+        matchedKeywords: keywords.slice(0, MAX_KEYWORDS_PER_ITEM),
         track: isTrackA ? 'A' : 'B',
         isPreSpec: false,
         industryStatus,
@@ -209,14 +204,15 @@ export default async function handler(req, res) {
       };
     }
 
+    // 1) PPSSrch
     for (const { keyword, items } of ppsResults) {
       const list = Array.isArray(items) ? items : [items];
       for (const item of list) {
         if (!item) continue;
         const key = `${item.bidNtceNo || ''}-${item.bidNtceOrd || '000'}-bid`;
-       if (itemMap.has(key)) {
+        if (itemMap.has(key)) {
           const existing = itemMap.get(key);
-          if (!existing.matchedKeywords.includes(keyword) && existing.matchedKeywords.length < 3) {
+          if (!existing.matchedKeywords.includes(keyword) && existing.matchedKeywords.length < MAX_KEYWORDS_PER_ITEM) {
             existing.matchedKeywords.push(keyword);
           }
         } else {
@@ -225,28 +221,29 @@ export default async function handler(req, res) {
       }
     }
 
+    // 2) Servc/Cnstwk 전체 스캔
     for (const { items } of fullResults) {
       const list = Array.isArray(items) ? items : [items];
       for (const item of list) {
         if (!item) continue;
         const name = item.bidNtceNm || '';
-       const matchedKw = KEYWORDS.filter(kw => searchText.includes(kw)).slice(0, 3);
+        const matchedKw = KEYWORDS.filter(kw => name.includes(kw)).slice(0, MAX_KEYWORDS_PER_ITEM);
         if (matchedKw.length === 0) continue;
-        const key = `${item.bfSpecRgstNo || ''}-pre`;
+        const key = `${item.bidNtceNo || ''}-${item.bidNtceOrd || '000'}-bid`;
         if (itemMap.has(key)) {
           const existing = itemMap.get(key);
           for (const kw of matchedKw) {
-            if (!existing.matchedKeywords.includes(kw) && existing.matchedKeywords.length < 3) {
+            if (!existing.matchedKeywords.includes(kw) && existing.matchedKeywords.length < MAX_KEYWORDS_PER_ITEM) {
               existing.matchedKeywords.push(kw);
             }
           }
-        }
         } else {
           itemMap.set(key, makeBidEntry(item, matchedKw));
         }
       }
     }
 
+    // 3) 사전규격
     for (const { items } of preSpecResults) {
       const list = Array.isArray(items) ? items : [items];
       for (const item of list) {
@@ -254,13 +251,15 @@ export default async function handler(req, res) {
         const name = item.prdctClsfcNoNm || '';
         const client = item.rlDminsttNm || item.dminsttNm || '';
         const searchText = name + ' ' + client;
-        const matchedKw = KEYWORDS.filter(kw => searchText.includes(kw));
+        const matchedKw = KEYWORDS.filter(kw => searchText.includes(kw)).slice(0, MAX_KEYWORDS_PER_ITEM);
         if (matchedKw.length === 0) continue;
         const key = `${item.bfSpecRgstNo || ''}-pre`;
         if (itemMap.has(key)) {
           const existing = itemMap.get(key);
           for (const kw of matchedKw) {
-            if (!existing.matchedKeywords.includes(kw)) existing.matchedKeywords.push(kw);
+            if (!existing.matchedKeywords.includes(kw) && existing.matchedKeywords.length < MAX_KEYWORDS_PER_ITEM) {
+              existing.matchedKeywords.push(kw);
+            }
           }
         } else {
           itemMap.set(key, {
