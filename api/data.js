@@ -17,20 +17,22 @@ export default async function handler(req, res) {
   ];
   const TRACK_A_PATTERNS = ['협상','기술제안','제안서','2단계','설계공모'];
   const TARGET_INDUSTRY_CODE = "4990";
-  const CACHE_TTL = 86400;
+  const CACHE_TTL = 86400 * 7; // 7일 (백업용)
   const CHUNK_SIZE = 200;
   const MAX_RETRIES = 1;
   const MAX_KEYWORDS_PER_ITEM = 3;
   const forceRefresh = req.query.refresh === 'true';
 
   try {
-    const cacheKey = 'bid_data_v20';
-    if (!forceRefresh) {
-      const cached = await kv.get(cacheKey);
-      if (cached) {
-        const age = cached.cachedAt ? Math.floor((Date.now() - cached.cachedAt) / 1000) : 0;
-        return res.status(200).json({ ...cached.payload, cached: true, cacheAge: age });
-      }
+    const cacheKey = 'bid_data_v22';
+
+    // 항상 이전 캐시 먼저 불러오기
+    const oldCache = await kv.get(cacheKey);
+
+    // refresh가 아니면 캐시 그대로 반환
+    if (!forceRefresh && oldCache) {
+      const age = oldCache.cachedAt ? Math.floor((Date.now() - oldCache.cachedAt) / 1000) : 0;
+      return res.status(200).json({ ...oldCache.payload, cached: true, cacheAge: age });
     }
 
     const fmt = (d) => {
@@ -159,6 +161,16 @@ export default async function handler(req, res) {
 
     const itemMap = new Map();
 
+    // 1) 이전 캐시 데이터 먼저 넣기 (백업)
+    if (oldCache?.payload?.items) {
+      for (const item of oldCache.payload.items) {
+        const key = item.isPreSpec
+          ? `${item.bidNtceNo || ''}-pre`
+          : `${item.bidNtceNo || ''}-${item.bidNtceOrd || '000'}-bid`;
+        itemMap.set(key, item);
+      }
+    }
+
     function makeBidEntry(item, keywords) {
       const name = item.bidNtceNm || '';
       const sucsfbidMthd = item.sucsfbidMthdNm || '';
@@ -204,31 +216,31 @@ export default async function handler(req, res) {
       };
     }
 
-    // 1) PPSSrch
+    // 2) PPSSrch 새 데이터 (덮어쓰기)
     for (const { keyword, items } of ppsResults) {
       const list = Array.isArray(items) ? items : [items];
       for (const item of list) {
         if (!item) continue;
-        // 취소공고 제외
         if (item.ntceKindNm === '취소공고') continue;
         const key = `${item.bidNtceNo || ''}-${item.bidNtceOrd || '000'}-bid`;
         if (itemMap.has(key)) {
           const existing = itemMap.get(key);
-          if (!existing.matchedKeywords.includes(keyword) && existing.matchedKeywords.length < MAX_KEYWORDS_PER_ITEM) {
-            existing.matchedKeywords.push(keyword);
-          }
+          // 새 데이터로 덮어쓰되 keywords는 합치기
+          const newEntry = makeBidEntry(item, [keyword]);
+          const merged = [...new Set([...existing.matchedKeywords, ...newEntry.matchedKeywords])].slice(0, MAX_KEYWORDS_PER_ITEM);
+          newEntry.matchedKeywords = merged;
+          itemMap.set(key, newEntry);
         } else {
           itemMap.set(key, makeBidEntry(item, [keyword]));
         }
       }
     }
 
-    // 2) Servc/Cnstwk 전체 스캔
+    // 3) Servc/Cnstwk 새 데이터
     for (const { items } of fullResults) {
       const list = Array.isArray(items) ? items : [items];
       for (const item of list) {
         if (!item) continue;
-        // 취소공고 제외
         if (item.ntceKindNm === '취소공고') continue;
         const name = item.bidNtceNm || '';
         const matchedKw = KEYWORDS.filter(kw => name.includes(kw)).slice(0, MAX_KEYWORDS_PER_ITEM);
@@ -236,18 +248,17 @@ export default async function handler(req, res) {
         const key = `${item.bidNtceNo || ''}-${item.bidNtceOrd || '000'}-bid`;
         if (itemMap.has(key)) {
           const existing = itemMap.get(key);
-          for (const kw of matchedKw) {
-            if (!existing.matchedKeywords.includes(kw) && existing.matchedKeywords.length < MAX_KEYWORDS_PER_ITEM) {
-              existing.matchedKeywords.push(kw);
-            }
-          }
+          const newEntry = makeBidEntry(item, matchedKw);
+          const merged = [...new Set([...existing.matchedKeywords, ...newEntry.matchedKeywords])].slice(0, MAX_KEYWORDS_PER_ITEM);
+          newEntry.matchedKeywords = merged;
+          itemMap.set(key, newEntry);
         } else {
           itemMap.set(key, makeBidEntry(item, matchedKw));
         }
       }
     }
 
-    // 3) 사전규격
+    // 4) 사전규격 새 데이터
     for (const { items } of preSpecResults) {
       const list = Array.isArray(items) ? items : [items];
       for (const item of list) {
@@ -258,50 +269,55 @@ export default async function handler(req, res) {
         const matchedKw = KEYWORDS.filter(kw => searchText.includes(kw)).slice(0, MAX_KEYWORDS_PER_ITEM);
         if (matchedKw.length === 0) continue;
         const key = `${item.bfSpecRgstNo || ''}-pre`;
+        const newEntry = {
+          bidNtceNo: item.bfSpecRgstNo || '',
+          bidNtceOrd: '',
+          bidNtceNm: name,
+          bidNtceDt: item.rgstDt || '',
+          bidClseDt: item.opninRgstClseDt || item.rcptDt || '',
+          opengDt: '',
+          ntceKindNm: '사전규격',
+          ntceInsttNm: item.dminsttNm || '',
+          dminsttNm: client,
+          presmptPrce: item.asignBdgtAmt || '0',
+          asignBdgtAmt: item.asignBdgtAmt || '0',
+          bidNtceUrl: '',
+          specDocFileUrl1: item.specDocFileUrl1 || '',
+          specDocFileUrl2: item.specDocFileUrl2 || '',
+          specDocFileUrl3: item.specDocFileUrl3 || '',
+          specDocFileUrl4: item.specDocFileUrl4 || '',
+          specDocFileUrl5: item.specDocFileUrl5 || '',
+          sucsfbidMthdNm: '',
+          techAbltEvlRt: '',
+          bidPrtcptLmtYn: 'N',
+          jntcontrctDutyRgnNm1: '',
+          cntrctCnclsMthdNm: '',
+          refNo: '',
+          matchedKeywords: matchedKw,
+          track: 'P',
+          isPreSpec: true,
+          industryStatus: 'unknown',
+          industryCode: '',
+          industryName: ''
+        };
         if (itemMap.has(key)) {
           const existing = itemMap.get(key);
-          for (const kw of matchedKw) {
-            if (!existing.matchedKeywords.includes(kw) && existing.matchedKeywords.length < MAX_KEYWORDS_PER_ITEM) {
-              existing.matchedKeywords.push(kw);
-            }
-          }
-        } else {
-          itemMap.set(key, {
-            bidNtceNo: item.bfSpecRgstNo || '',
-            bidNtceOrd: '',
-            bidNtceNm: name,
-            bidNtceDt: item.rgstDt || '',
-            bidClseDt: item.opninRgstClseDt || item.rcptDt || '',
-            opengDt: '',
-            ntceKindNm: '사전규격',
-            ntceInsttNm: item.dminsttNm || '',
-            dminsttNm: client,
-            presmptPrce: item.asignBdgtAmt || '0',
-            asignBdgtAmt: item.asignBdgtAmt || '0',
-            bidNtceUrl: '',
-            specDocFileUrl1: item.specDocFileUrl1 || '',
-            specDocFileUrl2: item.specDocFileUrl2 || '',
-            specDocFileUrl3: item.specDocFileUrl3 || '',
-            specDocFileUrl4: item.specDocFileUrl4 || '',
-            specDocFileUrl5: item.specDocFileUrl5 || '',
-            sucsfbidMthdNm: '',
-            techAbltEvlRt: '',
-            bidPrtcptLmtYn: 'N',
-            jntcontrctDutyRgnNm1: '',
-            cntrctCnclsMthdNm: '',
-            refNo: '',
-            matchedKeywords: matchedKw,
-            track: 'P',
-            isPreSpec: true,
-            industryStatus: 'unknown',
-            industryCode: '',
-            industryName: ''
-          });
+          const merged = [...new Set([...existing.matchedKeywords, ...newEntry.matchedKeywords])].slice(0, MAX_KEYWORDS_PER_ITEM);
+          newEntry.matchedKeywords = merged;
         }
+        itemMap.set(key, newEntry);
       }
     }
 
-    const allItems = Array.from(itemMap.values());
+    // 5) 마감 지난 공고 제거
+    const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const allItems = Array.from(itemMap.values()).filter(item => {
+      const closeDt = item.bidClseDt || item.opengDt;
+      if (!closeDt) return true; // 마감일 없으면 유지
+      const close = new Date(closeDt.replace(' ', 'T'));
+      return close >= oneDayAgo; // 마감 후 1일 이상 지난 건 삭제
+    });
+
     allItems.sort((a, b) => {
       const aDate = a.bidClseDt || a.opengDt || '9999';
       const bDate = b.bidClseDt || b.opengDt || '9999';
@@ -322,6 +338,11 @@ export default async function handler(req, res) {
     return res.status(200).json({ ...payload, cached: false, cacheAge: 0 });
 
   } catch (error) {
+    // 에러 시 옛 캐시라도 반환
+    const oldCache = await kv.get('bid_data_v22');
+    if (oldCache?.payload) {
+      return res.status(200).json({ ...oldCache.payload, cached: true, fromBackup: true });
+    }
     return res.status(500).json({ success: false, error: error.message });
   }
 }
