@@ -17,19 +17,18 @@ export default async function handler(req, res) {
   ];
   const TRACK_A_PATTERNS = ['협상','기술제안','제안서','2단계','설계공모'];
   const TARGET_INDUSTRY_CODE = "4990";
-  const CACHE_TTL = 86400 * 7; // 7일 (백업용)
+  const CACHE_TTL = 86400 * 7;
   const CHUNK_SIZE = 200;
   const MAX_RETRIES = 1;
   const MAX_KEYWORDS_PER_ITEM = 3;
+  const RECENT_DAYS = 7; // 갱신 기간
   const forceRefresh = req.query.refresh === 'true';
+  const fullRefresh = req.query.full === 'true'; // 전체 갱신용
 
   try {
-    const cacheKey = 'bid_data_v22';
-
-    // 항상 이전 캐시 먼저 불러오기
+    const cacheKey = 'bid_data_v23';
     const oldCache = await kv.get(cacheKey);
 
-    // refresh가 아니면 캐시 그대로 반환
     if (!forceRefresh && oldCache) {
       const age = oldCache.cachedAt ? Math.floor((Date.now() - oldCache.cachedAt) / 1000) : 0;
       return res.status(200).json({ ...oldCache.payload, cached: true, cacheAge: age });
@@ -68,23 +67,40 @@ export default async function handler(req, res) {
 
     const now = new Date();
 
-    const bidRanges = [];
-    for (let i = 0; i < 12; i++) {
-      const start = new Date(now.getTime() - (i + 1) * 10 * 24 * 60 * 60 * 1000);
-      const end = new Date(now.getTime() - i * 10 * 24 * 60 * 60 * 1000);
-      bidRanges.push({
-        bgn: fmt(start) + "0000",
-        end: fmt(end) + "2359"
-      });
-    }
+    // 옛 캐시가 없거나 full=true면 전체 120일 가져오기
+    // 그 외엔 최근 7일치만
+    const hasOldCache = !!oldCache?.payload?.items?.length;
+    const useIncremental = hasOldCache && !fullRefresh;
 
+    const bidRanges = [];
     const preSpecRanges = [];
-    for (let i = 0; i < 60; i++) {
-      const day = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
-      preSpecRanges.push({
-        bgn: fmt(day) + "0000",
-        end: fmt(day) + "2359"
-      });
+
+    if (useIncremental) {
+      // 최근 7일치 (1일×7구간)
+      for (let i = 0; i < RECENT_DAYS; i++) {
+        const day = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
+        const range = { bgn: fmt(day) + "0000", end: fmt(day) + "2359" };
+        bidRanges.push(range);
+        preSpecRanges.push(range);
+      }
+    } else {
+      // 전체 120일 (10일×12구간)
+      for (let i = 0; i < 12; i++) {
+        const start = new Date(now.getTime() - (i + 1) * 10 * 24 * 60 * 60 * 1000);
+        const end = new Date(now.getTime() - i * 10 * 24 * 60 * 60 * 1000);
+        bidRanges.push({
+          bgn: fmt(start) + "0000",
+          end: fmt(end) + "2359"
+        });
+      }
+      // 사전규격: 1일×60구간
+      for (let i = 0; i < 60; i++) {
+        const day = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
+        preSpecRanges.push({
+          bgn: fmt(day) + "0000",
+          end: fmt(day) + "2359"
+        });
+      }
     }
 
     const buildBidPPSSrchUrl = (keyword, range) =>
@@ -128,8 +144,9 @@ export default async function handler(req, res) {
     }
 
     const fullScanTasks = [];
+    const pagesPerRange = useIncremental ? 5 : 10;
     for (const range of bidRanges) {
-      for (let page = 1; page <= 10; page++) {
+      for (let page = 1; page <= pagesPerRange; page++) {
         fullScanTasks.push(async () => {
           const data = await fetchWithRetry(buildBidServcUrl(range, page));
           return { items: data?.response?.body?.items || [] };
@@ -161,7 +178,7 @@ export default async function handler(req, res) {
 
     const itemMap = new Map();
 
-    // 1) 이전 캐시 데이터 먼저 넣기 (백업)
+    // 이전 캐시 먼저 넣기
     if (oldCache?.payload?.items) {
       for (const item of oldCache.payload.items) {
         const key = item.isPreSpec
@@ -216,7 +233,6 @@ export default async function handler(req, res) {
       };
     }
 
-    // 2) PPSSrch 새 데이터 (덮어쓰기)
     for (const { keyword, items } of ppsResults) {
       const list = Array.isArray(items) ? items : [items];
       for (const item of list) {
@@ -225,7 +241,6 @@ export default async function handler(req, res) {
         const key = `${item.bidNtceNo || ''}-${item.bidNtceOrd || '000'}-bid`;
         if (itemMap.has(key)) {
           const existing = itemMap.get(key);
-          // 새 데이터로 덮어쓰되 keywords는 합치기
           const newEntry = makeBidEntry(item, [keyword]);
           const merged = [...new Set([...existing.matchedKeywords, ...newEntry.matchedKeywords])].slice(0, MAX_KEYWORDS_PER_ITEM);
           newEntry.matchedKeywords = merged;
@@ -236,7 +251,6 @@ export default async function handler(req, res) {
       }
     }
 
-    // 3) Servc/Cnstwk 새 데이터
     for (const { items } of fullResults) {
       const list = Array.isArray(items) ? items : [items];
       for (const item of list) {
@@ -258,7 +272,6 @@ export default async function handler(req, res) {
       }
     }
 
-    // 4) 사전규격 새 데이터
     for (const { items } of preSpecResults) {
       const list = Array.isArray(items) ? items : [items];
       for (const item of list) {
@@ -309,13 +322,13 @@ export default async function handler(req, res) {
       }
     }
 
-    // 5) 마감 지난 공고 제거
+    // 마감 지난 공고 제거
     const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
     const allItems = Array.from(itemMap.values()).filter(item => {
       const closeDt = item.bidClseDt || item.opengDt;
-      if (!closeDt) return true; // 마감일 없으면 유지
+      if (!closeDt) return true;
       const close = new Date(closeDt.replace(' ', 'T'));
-      return close >= oneDayAgo; // 마감 후 1일 이상 지난 건 삭제
+      return close >= oneDayAgo;
     });
 
     allItems.sort((a, b) => {
@@ -327,6 +340,7 @@ export default async function handler(req, res) {
     const payload = {
       success: true,
       timestamp: now.toISOString(),
+      mode: useIncremental ? 'incremental(7d)' : 'full(120d)',
       totalCount: allItems.length,
       trackACount: allItems.filter(i => i.track === 'A').length,
       trackBCount: allItems.filter(i => i.track === 'B').length,
@@ -338,8 +352,7 @@ export default async function handler(req, res) {
     return res.status(200).json({ ...payload, cached: false, cacheAge: 0 });
 
   } catch (error) {
-    // 에러 시 옛 캐시라도 반환
-    const oldCache = await kv.get('bid_data_v22');
+    const oldCache = await kv.get('bid_data_v23');
     if (oldCache?.payload) {
       return res.status(200).json({ ...oldCache.payload, cached: true, fromBackup: true });
     }
