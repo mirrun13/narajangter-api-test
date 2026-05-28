@@ -10,10 +10,14 @@ export default async function handler(req, res) {
 
   const API_KEY = "183930463902db8616a702c3c3c875687e7f85b717d1ac6352473b3b9d390f5f";
   const KEYWORDS = [
-    "전시", "홍보관", "과학관", "체험", "박물관", "행사", "홍보", "인테리어", "디자인", "공간", "서울",
+    "전시", "홍보관", "과학관", "체험", "박물관", "행사", "홍보", "인테리어", "디자인", "공간",
     "미술관", "갤러리", "기념관", "아트센터", "문화관", "교육관", "문화재", "관광",
     "미디어아트", "실감콘텐츠", "VR", "AR", "메타버스",
     "리뉴얼", "리모델링", "개보수"
+  ];
+  const EXCLUDE_KEYWORDS = [
+    "폐기물", "하수도", "도로", "청소", "급식", "통학", "안전점검",
+    "정수장", "오수", "분뇨", "수질", "방역", "소독"
   ];
   const TRACK_A_PATTERNS = ['협상','기술제안','제안서','2단계','설계공모'];
   const TARGET_INDUSTRY_CODE = "4990";
@@ -21,12 +25,12 @@ export default async function handler(req, res) {
   const CHUNK_SIZE = 200;
   const MAX_RETRIES = 1;
   const MAX_KEYWORDS_PER_ITEM = 3;
-  const RECENT_DAYS = 7; // 갱신 기간
+  const RECENT_DAYS = 7;
   const forceRefresh = req.query.refresh === 'true';
-  const fullRefresh = req.query.full === 'true'; // 전체 갱신용
+  const fullRefresh = req.query.full === 'true';
 
   try {
-    const cacheKey = 'bid_data_v23';
+    const cacheKey = 'bid_data_v24';
     const oldCache = await kv.get(cacheKey);
 
     if (!forceRefresh && oldCache) {
@@ -65,10 +69,12 @@ export default async function handler(req, res) {
       return results;
     };
 
-    const now = new Date();
+    // 제외 키워드 체크 함수
+    const hasExcludeKeyword = (text) => {
+      return EXCLUDE_KEYWORDS.some(kw => text.includes(kw));
+    };
 
-    // 옛 캐시가 없거나 full=true면 전체 120일 가져오기
-    // 그 외엔 최근 7일치만
+    const now = new Date();
     const hasOldCache = !!oldCache?.payload?.items?.length;
     const useIncremental = hasOldCache && !fullRefresh;
 
@@ -76,7 +82,6 @@ export default async function handler(req, res) {
     const preSpecRanges = [];
 
     if (useIncremental) {
-      // 최근 7일치 (1일×7구간)
       for (let i = 0; i < RECENT_DAYS; i++) {
         const day = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
         const range = { bgn: fmt(day) + "0000", end: fmt(day) + "2359" };
@@ -84,7 +89,6 @@ export default async function handler(req, res) {
         preSpecRanges.push(range);
       }
     } else {
-      // 전체 120일 (10일×12구간)
       for (let i = 0; i < 12; i++) {
         const start = new Date(now.getTime() - (i + 1) * 10 * 24 * 60 * 60 * 1000);
         const end = new Date(now.getTime() - i * 10 * 24 * 60 * 60 * 1000);
@@ -93,7 +97,6 @@ export default async function handler(req, res) {
           end: fmt(end) + "2359"
         });
       }
-      // 사전규격: 1일×60구간
       for (let i = 0; i < 60; i++) {
         const day = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
         preSpecRanges.push({
@@ -178,9 +181,10 @@ export default async function handler(req, res) {
 
     const itemMap = new Map();
 
-    // 이전 캐시 먼저 넣기
     if (oldCache?.payload?.items) {
       for (const item of oldCache.payload.items) {
+        // 이전 캐시도 제외 키워드로 필터링
+        if (hasExcludeKeyword(item.bidNtceNm || '')) continue;
         const key = item.isPreSpec
           ? `${item.bidNtceNo || ''}-pre`
           : `${item.bidNtceNo || ''}-${item.bidNtceOrd || '000'}-bid`;
@@ -238,6 +242,8 @@ export default async function handler(req, res) {
       for (const item of list) {
         if (!item) continue;
         if (item.ntceKindNm === '취소공고') continue;
+        const name = item.bidNtceNm || '';
+        if (hasExcludeKeyword(name)) continue;
         const key = `${item.bidNtceNo || ''}-${item.bidNtceOrd || '000'}-bid`;
         if (itemMap.has(key)) {
           const existing = itemMap.get(key);
@@ -257,6 +263,7 @@ export default async function handler(req, res) {
         if (!item) continue;
         if (item.ntceKindNm === '취소공고') continue;
         const name = item.bidNtceNm || '';
+        if (hasExcludeKeyword(name)) continue;
         const matchedKw = KEYWORDS.filter(kw => name.includes(kw)).slice(0, MAX_KEYWORDS_PER_ITEM);
         if (matchedKw.length === 0) continue;
         const key = `${item.bidNtceNo || ''}-${item.bidNtceOrd || '000'}-bid`;
@@ -277,9 +284,9 @@ export default async function handler(req, res) {
       for (const item of list) {
         if (!item) continue;
         const name = item.prdctClsfcNoNm || '';
+        if (hasExcludeKeyword(name)) continue;
         const client = item.rlDminsttNm || item.dminsttNm || '';
-        const searchText = name + ' ' + client;
-        const matchedKw = KEYWORDS.filter(kw => searchText.includes(kw)).slice(0, MAX_KEYWORDS_PER_ITEM);
+        const matchedKw = KEYWORDS.filter(kw => name.includes(kw)).slice(0, MAX_KEYWORDS_PER_ITEM);
         if (matchedKw.length === 0) continue;
         const key = `${item.bfSpecRgstNo || ''}-pre`;
         const newEntry = {
@@ -322,7 +329,6 @@ export default async function handler(req, res) {
       }
     }
 
-    // 마감 지난 공고 제거
     const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
     const allItems = Array.from(itemMap.values()).filter(item => {
       const closeDt = item.bidClseDt || item.opengDt;
@@ -352,7 +358,7 @@ export default async function handler(req, res) {
     return res.status(200).json({ ...payload, cached: false, cacheAge: 0 });
 
   } catch (error) {
-    const oldCache = await kv.get('bid_data_v23');
+    const oldCache = await kv.get('bid_data_v24');
     if (oldCache?.payload) {
       return res.status(200).json({ ...oldCache.payload, cached: true, fromBackup: true });
     }
