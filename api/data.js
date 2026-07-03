@@ -13,7 +13,8 @@ export default async function handler(req, res) {
     "전시", "홍보관", "과학관", "체험", "박물관", "행사", "홍보", "인테리어", "디자인", "공간",
     "미술관", "갤러리", "기념관", "아트센터", "문화관", "교육관", "문화재", "관광",
     "미디어아트", "실감콘텐츠", "VR", "AR", "메타버스",
-    "리뉴얼", "리모델링", "개보수"
+    "리뉴얼", "리모델링", "개보수",
+    "전광판", "LED", "미디어월", "미디어파사드", "사이니지", "디스플레이"
   ];
   const EXCLUDE_KEYWORDS = [
     "폐기물", "하수도", "도로", "청소", "급식", "통학", "안전점검",
@@ -30,7 +31,7 @@ export default async function handler(req, res) {
   const fullRefresh = req.query.full === 'true';
 
   try {
-    const cacheKey = 'bid_data_v24';
+    const cacheKey = 'bid_data_v25';
     const oldCache = await kv.get(cacheKey);
 
     if (!forceRefresh && oldCache) {
@@ -358,7 +359,7 @@ export default async function handler(req, res) {
     return res.status(200).json({ ...payload, cached: false, cacheAge: 0 });
 
   } catch (error) {
-    const oldCache = await kv.get('bid_data_v24');
+    const oldCache = await kv.get('bid_data_v25');
     if (oldCache?.payload) {
       return res.status(200).json({ ...oldCache.payload, cached: true, fromBackup: true });
     }
