@@ -53,8 +53,7 @@ export default async function handler(req, res) {
       const role = await kv.get(`session_${token}`);
       if (role !== 'admin') return res.status(401).json({ success: false, error: '권한 없음' });
       if (!newPassword || newPassword.length < 4) return res.status(400).json({ success: false, error: '비밀번호는 4자 이상이어야 합니다.' });
-      const currentPw = await kv.get('admin_pw') || 'mir19790805';
-      if (oldPassword !== currentPw) return res.status(401).json({ success: false, error: '현재 비밀번호가 틀렸습니다.' });
+      if (oldPassword !== process.env.MASTER_KEY) return res.status(401).json({ success: false, error: '마스터키가 필요합니다.' });
       await kv.set('admin_pw', newPassword);
       return res.status(200).json({ success: true, message: '관리자 비밀번호가 변경되었습니다.' });
     }
