@@ -11,8 +11,8 @@ export default async function handler(req, res) {
   const { action } = req.query;
   const { password, token, newPassword, oldPassword, newAdminPw, newGuestPw } = req.body || {};
   try {
-    let adminPw = await kv.get('admin_pw') || 'mir19790805';
-    let guestPw = await kv.get('guest_pw') || 'some2026';
+   let adminPw = await kv.get('admin_pw');
+    let guestPw = await kv.get('guest_pw');
     
     // ✅ master-reset을 먼저 처리!
     if (action === 'master-reset') {
