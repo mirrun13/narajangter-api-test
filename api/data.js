@@ -15,6 +15,7 @@ export default async function handler(req, res) {
     "미디어아트", "실감", "VR", "AR", "메타버스",
     "리뉴얼", "리모델링", "개보수",
     "전광판", "LED", "미디어월", "미디어파사드", "사이니지", "디스플레이"
+    "실내건축", "환경개선", "시설개선"
   ];
   const EXCLUDE_KEYWORDS = [
     "폐기물", "하수도", "도로", "청소", "급식", "통학", "안전점검",
@@ -31,7 +32,7 @@ export default async function handler(req, res) {
   const fullRefresh = req.query.full === 'true';
 
   try {
-    const cacheKey = 'bid_data_v26';
+    const cacheKey = 'bid_data_v27';
     const oldCache = await kv.get(cacheKey);
 
     if (!forceRefresh && oldCache) {
@@ -359,7 +360,7 @@ export default async function handler(req, res) {
     return res.status(200).json({ ...payload, cached: false, cacheAge: 0 });
 
   } catch (error) {
-    const oldCache = await kv.get('bid_data_v26');
+    const oldCache = await kv.get('bid_data_v27');
     if (oldCache?.payload) {
       return res.status(200).json({ ...oldCache.payload, cached: true, fromBackup: true });
     }
